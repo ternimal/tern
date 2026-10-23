@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # A version update waits until a release is a week old, which leaves time
+  # for a hijacked or broken release to be noticed before it is proposed
+  # here. Security updates never wait.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      go-deps:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

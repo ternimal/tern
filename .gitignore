@@ -1,0 +1,16 @@
+/bin/
+/dist/
+/tern
+/ternd
+/ternr
+/rtern
+*.exe
+*.crt
+*.key
+tern_id_ed25519
+tern_id_ed25519.pub
+id_tern
+id_tern.pub
+# secrets and recordings that the README examples create
+*.token
+*.cast

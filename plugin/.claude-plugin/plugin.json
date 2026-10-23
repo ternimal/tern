@@ -1,0 +1,24 @@
+{
+  "name": "ternimal",
+  "displayName": "Ternimal",
+  "version": "1.0.0",
+  "description": "Work on your own hosts through tern mcp: policy-bound commands, file transfers, background jobs and interactive terminals over end-to-end TLS, with approval prompts, redaction and an audit log.",
+  "author": {
+    "name": "Ternimal",
+    "url": "https://github.com/ternimal"
+  },
+  "homepage": "https://github.com/ternimal/tern",
+  "repository": "https://github.com/ternimal/tern",
+  "license": "AGPL-3.0-only",
+  "keywords": ["remote", "terminal", "ssh", "mcp", "ops", "sysadmin"],
+  "documentationUrl": "https://github.com/ternimal/tern/blob/main/docs/mcp.md",
+  "supportUrl": "https://github.com/ternimal/tern/issues",
+  "userConfig": {
+    "config": {
+      "type": "string",
+      "title": "tern mcp config file",
+      "description": "Path to the JSON file that names your hosts and their policy profiles. A leading ~/ is expanded. The ternimal:setup skill helps you write it.",
+      "default": "~/.config/tern/mcp.json"
+    }
+  }
+}

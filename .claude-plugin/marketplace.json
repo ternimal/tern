@@ -1,0 +1,15 @@
+{
+  "name": "ternimal",
+  "description": "The Ternimal plugin: tern mcp for Claude Code and Cowork",
+  "owner": {
+    "name": "Ternimal",
+    "url": "https://github.com/ternimal"
+  },
+  "plugins": [
+    {
+      "name": "ternimal",
+      "source": "./plugin",
+      "description": "Work on your own hosts through tern mcp: policy-bound commands, file transfers, background jobs and interactive terminals, with approval prompts, redaction and an audit log."
+    }
+  ]
+}

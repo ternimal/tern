@@ -1,0 +1,4 @@
+go test fuzz v1
+[]byte("0\ufeff")
+int(86)
+int(62)

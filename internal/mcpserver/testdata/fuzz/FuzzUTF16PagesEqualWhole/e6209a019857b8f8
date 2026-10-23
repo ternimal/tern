@@ -1,0 +1,5 @@
+go test fuzz v1
+[]byte("2AAA7Ccccccccccccccc0")
+uint16(67)
+bool(true)
+uint16(124)

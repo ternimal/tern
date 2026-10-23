@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tern": {
+      "command": "tern",
+      "args": ["mcp", "--config", "${user_config.config}"]
+    }
+  }
+}

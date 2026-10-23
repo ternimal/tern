@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  # Branches only: a tag runs these jobs once, through the release workflow.
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+  # The release workflow runs these jobs on the tagged commit before it publishes.
+  workflow_call:
+  # Weekly, so a vulnerability published after the last push is still caught.
+  schedule:
+    - cron: '23 4 * * 1'
+
+# No default token scopes at the workflow level; each job asks for what it needs.
+permissions: {}
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Exact toolchain: the release binaries reproduce bit-for-bit only with
+          # the version that built them. Bump deliberately, together with the
+          # release workflow and the staticcheck pin in the Makefile.
+          go-version: '1.26.10'
+      - name: lint (gofmt, vet, staticcheck)
+        run: make lint
+      - run: go test -race -count=1 ./...
+      - run: go build ./...
+      - name: govulncheck
+        # Pinned so CI does not execute whatever @latest resolves to on the day.
+        # Each OS links different code, so each is checked.
+        run: |
+          # Built for this runner once, then run as each OS: go run with GOOS
+          # set would build it for that OS.
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          for os in linux windows darwin; do
+            GOOS=$os "$(go env GOPATH)/bin/govulncheck" ./... || exit 1
+          done
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.10'
+      - run: go vet ./...
+      - run: go build ./...
+      - name: Windows unit tests (internal/tern; ConPTY tests skip here, the runner has no console)
+        # The rest of internal/tern assumes a Unix shell and runs on the Linux
+        # job. This runs every test in its *_windows_test.go files (ACLs, key
+        # checks, exclusive listeners, batch files, job objects) and the
+        # portable tests of code that differs on Windows, picked by file so a
+        # new test there cannot be left out.
+        shell: pwsh
+        run: |
+          $files = @('internal/tern/*_windows_test.go', 'internal/tern/listen_test.go', 'internal/tern/newkey_test.go')
+          $names = Select-String -Path $files -Pattern '^func (Test\w+)\(' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+          if (-not $names) { throw 'no Windows unit tests found' }
+          go test ./internal/tern/ -count=1 -timeout 600s -v -run "^($($names -join '|'))`$"
+      - name: MCP server and command tests (go test ./internal/mcpserver/ ./cmd/...)
+        # Portable like the e2e suite; the tests that need a Unix shell or
+        # symlinks skip here.
+        run: go test ./internal/mcpserver/ ./cmd/... -count=1 -timeout 360s
+      - name: e2e (go test ./test/; interactive ConPTY tests skip here, the runner has no console)
+        # The e2e suite is portable; its PTY tests need TERN_E2E_PTY=1 and a
+        # real Windows console.
+        run: go test ./test/ -count=1 -timeout 360s
+      - name: windows native e2e (direct connect + exec)
+        shell: pwsh
+        run: ./test/e2e-windows.ps1
+      - name: build windows exes (CI artifact, not a release)
+        # Only for pushes to main here: exes built from a pull request or from
+        # another branch, Dependabot's included, would sit under this
+        # repository's name as if it had vetted them, and a tag's builds are
+        # its release zips.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'ternimal/tern'
+        shell: pwsh
+        run: |
+          mkdir dist
+          foreach ($c in 'tern', 'ternd', 'ternr', 'rtern') {
+            go build -trimpath -ldflags "-s -w -X main.version=ci-${{ github.sha }}" -o "dist\$c.exe" "./cmd/$c"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'ternimal/tern'
+        with:
+          name: ternimal-windows-amd64-ci
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 7
