@@ -43,7 +43,8 @@ The JSON form is for Claude Desktop, Cursor, VS Code and other clients that
 start servers from a config file. Pass credentials through `env`, not `args`,
 so they stay off the command line. Either way the client keeps them in plain
 text in its own settings (Claude Code in `~/.claude.json`); to keep a token
-in a file of its own, give `tern mcp` a `--token-file` instead. Any
+in a file of its own, give `tern mcp` a `--token-file` instead, or use the
+plugin, whose config file never holds a secret itself. Any
 connection flag of `tern connect` works too (`--addr`/`--fingerprint`,
 `--relay`/`--id`, `--key`). A path in a flag (`--key`, `--token-file`,
 `--relay-token-file`, `--to-file`, `--config`, `--workspace`,
@@ -133,7 +134,7 @@ Administrators), or, on Unix, a pipe of yours, is taken. The config file and
 any `to_file` name the agents to trust: one another account owns (root, SYSTEM
 and Administrators aside) or others could change is refused, and so is one
 another account could have put in its place, through the directory it is in (on
-Unix) or a symlink, as for `ternd`'s `authorized_keys` (see the README), though
+Unix) or a symlink, as for `ternd`'s [`authorized_keys`](files.md#authorized_keys), though
 others may read the config file and a `to_file` without the relay token. `~`
 and a leading `~/` (`~\` on Windows) are the home directory, and other relative
 paths are taken from the config file's directory: a relative `workspace` in
@@ -310,7 +311,8 @@ A tool that no target's profile can use is not offered: with only readonly
 targets, the client sees no `job_*`, `write_file`, `upload` or `pty_*` tools:
 background jobs come with a profile that adds `run.allow`, `run.shell`,
 `run.allow_wrappers` or `run.confirm_unlisted`, and `upload` and `download`
-also need a workspace.
+also need a workspace. A workspace alone therefore lets the AI download files
+from a readonly target too, within the paths that profile may read.
 
 Command output and file contents are untrusted data from the remote host, and
 the tool descriptions tell the model so. Text results carry no escape
