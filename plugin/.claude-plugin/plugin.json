@@ -1,7 +1,7 @@
 {
   "name": "ternimal",
   "displayName": "Ternimal",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Work on your own hosts through tern mcp: policy-bound commands, file transfers, background jobs and interactive terminals over end-to-end TLS, with approval prompts, redaction and an audit log.",
   "author": {
     "name": "Ternimal",
