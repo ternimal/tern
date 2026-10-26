@@ -62,7 +62,10 @@ build:
 # internal/release writes from the binaries' build information with the license
 # files of the Go standard library and of every module linked in, read from
 # GOROOT and the module cache (offline). The android/amd64 notices also carry the
-# NDK sysroot's NOTICE, for the C start files its linker adds.
+# NDK sysroot's NOTICE, for the C start files its linker adds. With a VERSION
+# other than dev, each zip is also copied to dist/ternimal-<VERSION>-<os>-<arch>.zip:
+# the same bytes under a name that says the version, while the name without it
+# keeps the releases/latest/download links stable.
 # (any failed build or zip fails the target, so a release never ships a partial set)
 release: $(PLATFORMS)
 
@@ -89,6 +92,10 @@ $(PLATFORMS):
 	fi; \
 	GOPROXY=off go run ./internal/release "$$@" $$bins || { rm -rf $$staging; exit 1; }; \
 	echo "packed $$zipname"; \
+	if [ "$(VERSION)" != dev ]; then \
+		cp "$$zipname" "dist/ternimal-$(VERSION)-$$os-$$arch.zip" || { rm -rf $$staging; exit 1; }; \
+		echo "copied it to dist/ternimal-$(VERSION)-$$os-$$arch.zip"; \
+	fi; \
 	rm -rf $$staging
 
 clean:
