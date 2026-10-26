@@ -61,3 +61,40 @@ reply says how to sign the CLA.
   does not match, so raise it with each release.
 
 Please run `make lint` and `make test` before opening a pull request.
+
+## Code layout
+
+```
+internal/tern/   portable core
+  doc.go          package overview
+  const.go        tunables + logging setup
+  cli.go          shared CLI helpers: flag aliases + usage, env fallback, banner, write mode
+  proto.go        wire frames, blobs, TLS cert + pinning
+  auth.go         token / OpenSSH-pubkey auth, keygen
+  mux.go          yamux channels + stream headers
+  sessionmgr.go   named PTY sessions: resume + multi-client share
+  recorder.go     asciicast session recording
+  agent.go        agent: dispatch shell/exec/forward/file/rpc
+  procgroup_*.go / killsession_linux.go / killwait.go / reap_linux.go   ending commands, PID-1 reaping
+  upload_*.go / fileopen_*.go / filemode*.go   file copy
+  client_ops.go   client: dial + auth, run/forward/copy/list
+  relay.go        relay server (ternr), relay dialing, rtern's agent catch
+  serve.go        agent accept loop and relay registration loop
+  limit.go / party.go   caps on unauthenticated handshakes, and who gives way
+  listen.go       listeners: loopback held on 127.0.0.1 and ::1 alike, a name on every address it gives
+  secretfile*.go / keyfile_*.go   checks on the files tern reads: tokens, keys, certificates, tern1:, configs, authorized_keys
+  connstr.go      tern1:... connection strings
+  api.go          REST gateway (run/stream/jobs, stdin)
+  session.go      client terminal + auto-reconnect
+  shell_stream.go client side of a shell session: attach, type, resize, read
+  shell_pty.go / shell_stub.go   PTY host (stub on iOS)
+  *_test.go       unit tests
+internal/mcpserver/  tern mcp: policy, confirmation, audit, redaction, jobs, terminals
+internal/release/    make release packer: zips with LICENSE, NOTICE and THIRD_PARTY_NOTICES.txt
+cmd/tern   cmd/ternd   cmd/ternr   cmd/rtern
+test/            end-to-end tests (e2e_test.go, mcp_*_test.go, e2e-windows.ps1)
+docs/            user guides: getting started, commands, REST, tern mcp, install, files, notes, features
+docs/demo/       the demo recordings
+plugin/          the Claude Code plugin: the tern mcp server it starts, and its skills
+.claude-plugin/  marketplace.json, which lists the plugin for `claude plugin marketplace add`
+```
