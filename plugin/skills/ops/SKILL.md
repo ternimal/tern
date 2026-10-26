@@ -61,6 +61,9 @@ you can only work in the terminals you opened.
 
 - Some actions open an approval form for the user. Wait for their answer;
   never ask them to approve in the chat instead.
+- A call refused because no answer came within 5 minutes means the user's
+  client may not show approval forms. Tell the user what was refused, and do
+  not send the call again unless they ask.
 - Never ask the user to paste a token, key or password into the chat, and
   never put one in a command line.
 

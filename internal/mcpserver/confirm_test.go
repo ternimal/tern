@@ -4,9 +4,12 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +92,131 @@ func TestConfirmRejects(t *testing.T) {
 	other2 := newConfirmer()
 	if st, _ := c.check(act, retry(other2.request(act, "m").RequestState, "accept", true)); st != confirmRejected {
 		t.Error("a state from another server instance must be rejected")
+	}
+}
+
+// TestConfirmAskedInCall: a client on 2025-11-25 does not retry a call that
+// asks for input, so it is asked inside the call, and each answer decides the
+// call as it does on 2026-07-28.
+func TestConfirmAskedInCall(t *testing.T) {
+	a := newStackAgent(t)
+	prof := everything
+	prof.Confirm = []string{"run:shell"}
+	srv, _ := stackServer(t, a, prof, nil)
+	defer srv.Close()
+	var answer *mcp.ElicitResult
+	var asked []string
+	handler := func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		asked = append(asked, req.Params.Message)
+		return answer, nil
+	}
+	cs := stackClient(t, srv, "2025-11-25", &mcp.ClientOptions{ElicitationHandler: handler})
+	for _, tc := range []struct {
+		action  string
+		approve bool
+		want    string
+	}{
+		{"decline", false, "the user declined"},
+		{"cancel", false, "dismissed"},
+		{"accept", false, "did not approve"},
+	} {
+		answer = &mcp.ElicitResult{Action: tc.action, Content: map[string]any{"approve": tc.approve}}
+		if msg := call(t, cs, "run", map[string]any{"argv": []string{"echo refused"}, "shell": true}, nil, true); !strings.Contains(msg, tc.want) {
+			t.Errorf("%s: %q", tc.action, msg)
+		}
+	}
+	answer = &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}
+	var run struct{ Output string }
+	call(t, cs, "run", map[string]any{"argv": []string{"echo approved"}, "shell": true}, &run, false)
+	if !strings.Contains(run.Output, "approved") {
+		t.Fatalf("run = %q", run.Output)
+	}
+	if len(asked) != 4 || !strings.Contains(asked[3], "echo approved") {
+		t.Fatalf("asked %q", asked)
+	}
+}
+
+// TestConfirmNoAnswer: a client on 2025-11-25 that takes the form and never
+// answers holds the call only as long as the wait. Then the call is refused
+// with that reason, nothing runs, and nothing claims the user declined.
+func TestConfirmNoAnswer(t *testing.T) {
+	a := newStackAgent(t)
+	prof := everything
+	prof.Confirm = []string{"run:shell"}
+	srv, audit := stackServer(t, a, prof, nil)
+	defer srv.Close()
+	srv.confirm.wait = time.Second
+	gone := make(chan struct{})
+	handler := func(ctx context.Context, _ *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		select { // the form is never answered
+		case <-ctx.Done():
+		case <-gone:
+		}
+		return nil, errors.New("never answered")
+	}
+	cs := stackClient(t, srv, "2025-11-25", &mcp.ClientOptions{ElicitationHandler: handler})
+	t.Cleanup(func() { close(gone) })
+
+	begin := time.Now()
+	msg := call(t, cs, "run", map[string]any{"argv": []string{"echo never"}, "shell": true}, nil, true)
+	if !strings.Contains(msg, "no answer came within 1s") || strings.Contains(msg, "declined") {
+		t.Fatalf("refusal: %q", msg)
+	}
+	if took := time.Since(begin); took > 30*time.Second {
+		t.Fatalf("the call waited %s", took)
+	}
+	log, err := os.ReadFile(audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(log), `"phase":"confirm_requested"`); n != 1 || !strings.Contains(string(log), `"phase":"denied"`) || !strings.Contains(string(log), "no answer came within 1s") {
+		t.Fatalf("audit log, %d confirm_requested:\n%s", n, log)
+	}
+	if strings.Contains(string(log), `"phase":"start"`) {
+		t.Fatalf("an unanswered action started:\n%s", log)
+	}
+	// The server still serves calls that need no approval.
+	call(t, cs, "list_targets", map[string]any{}, nil, false)
+}
+
+// TestConfirmCancelledWhileAsking: a call the client gives up on while the
+// form is open is refused as cancelled, not as unanswered.
+func TestConfirmCancelledWhileAsking(t *testing.T) {
+	a := newStackAgent(t)
+	prof := everything
+	prof.Confirm = []string{"run:shell"}
+	srv, audit := stackServer(t, a, prof, nil)
+	defer srv.Close()
+	asked := make(chan struct{}, 1)
+	gone := make(chan struct{})
+	handler := func(ctx context.Context, _ *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		asked <- struct{}{}
+		select {
+		case <-ctx.Done():
+		case <-gone:
+		}
+		return nil, errors.New("never answered")
+	}
+	cs := stackClient(t, srv, "2025-11-25", &mcp.ClientOptions{ElicitationHandler: handler})
+	t.Cleanup(func() { close(gone) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { <-asked; cancel() }()
+	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "run", Arguments: map[string]any{"argv": []string{"echo never"}, "shell": true}}); err == nil {
+		t.Fatal("a cancelled call returned no error")
+	}
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		log, _ := os.ReadFile(audit)
+		if strings.Contains(string(log), "the call was cancelled while the user was being asked") {
+			if strings.Contains(string(log), `"phase":"start"`) {
+				t.Fatalf("a cancelled action started:\n%s", log)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("audit log:\n%s", log)
+		}
 	}
 }
 

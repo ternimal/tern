@@ -294,15 +294,26 @@ func (s *Server) Close() error {
 }
 
 // gate applies a policy decision to a call. It returns nothing to proceed, an
-// input_required result to ask the user (the call is retried with the
-// answer), or an error to refuse. what and details describe the action to the
-// user; action is what the approval is bound to.
-func (s *Server) gate(req *mcp.CallToolRequest, e *AuditEntry, t *targetState, d Decision, why, action string, v confirmView) (*mcp.CallToolResult, error) {
+// input_required result to ask the user, or an error to refuse. The call comes
+// back with the answer, from the client or, for one that cannot retry, from
+// addTool; a call addTool retries without an answer is refused here. v
+// describes the action to the user; action is what the approval is bound to.
+func (s *Server) gate(ctx context.Context, req *mcp.CallToolRequest, e *AuditEntry, t *targetState, d Decision, why, action string, v confirmView) (*mcp.CallToolResult, error) {
 	switch d {
 	case Deny:
 		return nil, s.deny(*e, why)
 	case Allow:
 		return nil, nil
+	}
+	if err := unanswered(ctx); err != nil {
+		switch {
+		case errors.Is(err, errNoAnswer):
+			return nil, s.deny(*e, fmt.Sprintf("%s, but no answer came within %s, so nothing was done; the client may not show approval forms, or nobody answered in time; use a client that shows them, or change the profile's confirm settings", why, s.confirm.wait))
+		case ctx.Err() != nil:
+			return nil, s.deny(*e, "the call was cancelled while the user was being asked")
+		default:
+			return nil, s.deny(*e, "asking the user failed: "+err.Error())
+		}
 	}
 	var p *mcp.CallToolParamsRaw
 	if req != nil {
@@ -326,6 +337,48 @@ func (s *Server) gate(req *mcp.CallToolRequest, e *AuditEntry, t *targetState, d
 	ask.Phase, ask.Reason = "confirm_requested", why
 	s.logOrWarn(ask)
 	return s.confirm.request(action, msg), nil
+}
+
+// addTool registers a tool. A client on a protocol before 2026-07-28 cannot
+// retry a call that asks for input, and the SDK would ask it on the call's
+// behalf and wait for the answer with no limit: a client that takes the form
+// and never shows it would hold the call for good. Here such a client gets the
+// same form, the answer is awaited at most as long as an approval lasts, and
+// the call is then retried with it, as a retrying client does, so every check
+// before the approval is made again.
+func addTool[In, Out any](s *Server, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
+	mcp.AddTool(s.mcp, t, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		if req == nil || req.Params == nil || retries(req) {
+			return h(ctx, req, in)
+		}
+		// The retry gets the input as the client sent it, whatever the
+		// first run did with its copy.
+		again, cerr := cloneInput(in)
+		res, out, err := h(ctx, req, in)
+		if err != nil || res == nil || len(res.InputRequests) == 0 || cerr != nil {
+			return res, out, err
+		}
+		params := *req.Params
+		answers, aerr := s.confirm.askNow(ctx, req.Session, res.InputRequests)
+		if aerr != nil {
+			ctx = withUnanswered(ctx, aerr)
+		} else {
+			params.InputResponses, params.RequestState = answers, res.RequestState
+		}
+		retry := *req
+		retry.Params = &params
+		return h(ctx, &retry, again)
+	})
+}
+
+// cloneInput copies a tool's input through JSON, which it was decoded from.
+func cloneInput[In any](in In) (In, error) {
+	var c In
+	b, err := json.Marshal(in)
+	if err == nil {
+		err = json.Unmarshal(b, &c)
+	}
+	return c, err
 }
 
 // replayCall returns the stored result when a call carrying an idempotency key

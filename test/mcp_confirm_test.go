@@ -48,7 +48,7 @@ func (u *fakeUser) handle(_ context.Context, req *mcp.ElicitRequest) (*mcp.Elici
 //
 // It runs twice: with protocol 2026-07-28 the server answers input_required
 // and the client retries, and with 2025-11-25, which most clients still speak,
-// the SDK turns the same result into an elicitation/create request.
+// the server asks with an elicitation/create request inside the call.
 func TestMCPConfirmation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh on the agent")
@@ -142,8 +142,8 @@ func testConfirmation(t *testing.T, a agent, version string) {
 	}
 }
 
-// TestMCPConfirmationNeedsAskingClient checks that a client that cannot show
-// a form gets a clear refusal, not a prompt nobody will see.
+// TestMCPConfirmationNeedsAskingClient checks that a client that declares no
+// form support gets a clear refusal instead of a prompt.
 func TestMCPConfirmationNeedsAskingClient(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses sh on the agent")

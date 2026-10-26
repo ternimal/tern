@@ -465,8 +465,18 @@ bound to it: a file changed after you approved it is refused, and a new call
 asks again. Typing into a terminal needs approval exactly when shell commands
 do.
 
-A client that cannot show forms gets a clear refusal rather than a prompt
-nobody sees. This works with clients on MCP 2026-07-28 and on 2025-11-25.
+A client that does not declare form support gets a clear refusal instead of a
+prompt. Whether a client that declares it really shows the form, `tern mcp`
+cannot see: an answer only says accept, decline or cancel. A client on MCP
+2026-07-28 answers by sending the call again, and an approval sent more than 5
+minutes after the form was issued is refused. A client on 2025-11-25 or earlier
+is asked inside the call, which waits at most 5 minutes for the answer and
+then runs again with it, every check included; with no answer by then the call
+is refused and nothing is done. Some clients declare forms but never show them:
+with one of those, an action that needs approval cannot run, so allow it in the
+profile or use a client that shows the form. A client that answers without
+asking you defeats the approval, whether it refuses every action or approves it
+without you.
 
 ## Terminals
 
