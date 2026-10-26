@@ -102,7 +102,7 @@ jobs:
           - zero-config: run \`ternd\` and paste the connect command it prints
           - Linux, macOS, Windows and Android on amd64 and arm64; every target builds without cgo except android/amd64
 
-          Download the zip for your OS and arch below; macOS zips are named darwin. Each holds the four binaries with LICENSE, NOTICE and THIRD_PARTY_NOTICES.txt, the licenses of the code they contain. Windows builds need Windows 10 or later, and hosting a shell with ternd needs Windows 10 1809 or Windows Server 2019 or later for ConPTY.
+          Download the zip for your OS and arch below; macOS zips are named darwin. Each zip is there twice, the same file under two names: with the version, such as ternimal-$TAG-linux-amd64.zip, and without it, the name the releases/latest/download links use. Each holds the four binaries with LICENSE, NOTICE and THIRD_PARTY_NOTICES.txt, the licenses of the code they contain. Windows builds need Windows 10 or later, and hosting a shell with ternd needs Windows 10 1809 or Windows Server 2019 or later for ConPTY.
 
           $verify"
           # A tag such as v1.2.0-rc.1 is a pre-release, never the latest release.

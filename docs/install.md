@@ -18,6 +18,10 @@ unzip ternimal-linux-amd64.zip tern ternd ternr rtern -d ~/.local/bin
 ```
 
 macOS zips are named `darwin`; on Windows, unzip and add the folder to `PATH`.
+Releases after v1.0.1 publish every zip twice, the same file under two names:
+`ternimal-<version>-<os>-<arch>.zip`, which says its version, and
+`ternimal-<os>-<arch>.zip`, the name the `releases/latest/download` links above
+use. `SHA256SUMS` lists both.
 Each zip also holds LICENSE, NOTICE and THIRD_PARTY_NOTICES.txt, the licenses
 of the code in the binaries; the `unzip` line above takes only the binaries.
 
@@ -45,7 +49,8 @@ Requires **Go 1.26.10+** (an older Go 1.21+ fetches it on its own).
 ```bash
 make build            # native bin/tern, bin/ternd, bin/ternr, bin/rtern
 make release          # dist/ternimal-<os>-<arch>.zip for every platform: the binaries,
-                      # LICENSE, NOTICE and THIRD_PARTY_NOTICES.txt (needs the Android NDK for android/amd64)
+                      # LICENSE, NOTICE and THIRD_PARTY_NOTICES.txt (needs the Android NDK for android/amd64);
+                      # with VERSION set, also a copy named ternimal-<VERSION>-<os>-<arch>.zip
 ```
 
 Every target builds as pure Go (`CGO_ENABLED=0`) except android/amd64, which
