@@ -380,6 +380,12 @@ func TestMkdirAllRefusesDanglingLinks(t *testing.T) {
 // approved call fail, as it meets the checks again, and nothing is made where
 // the link leads, though the check before asking passed.
 func TestDownloadRechecksLinksAfterApproval(t *testing.T) {
+	for _, version := range []string{"2026-07-28", "2025-11-25"} {
+		t.Run(version, func(t *testing.T) { testDownloadRechecksLinksAfterApproval(t, version) })
+	}
+}
+
+func testDownloadRechecksLinksAfterApproval(t *testing.T, version string) {
 	a := newStackAgent(t)
 	ws, remote := t.TempDir(), t.TempDir()
 	os.WriteFile(filepath.Join(remote, "x.desktop"), []byte("[Desktop Entry]\nExec=sh -c 'echo planted'\n"), 0o644)
@@ -387,7 +393,7 @@ func TestDownloadRechecksLinksAfterApproval(t *testing.T) {
 		func(c *Config) { c.Workspace = ws })
 	defer srv.Close()
 	asked := 0
-	cs := stackClient(t, srv, "", &mcp.ClientOptions{ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+	cs := stackClient(t, srv, version, &mcp.ClientOptions{ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 		asked++
 		if err := os.Symlink(".config", filepath.Join(ws, "cfg")); err != nil {
 			t.Error(err)
@@ -405,6 +411,33 @@ func TestDownloadRechecksLinksAfterApproval(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(ws, ".config")); err == nil {
 		t.Error("the download made a directory where the link planted while asking leads")
+	}
+}
+
+// TestDownloadNoOverwriteWhileAsking: a file that appears at the download's
+// target while the form is open is not replaced: the approved call meets the
+// check that nothing is there again, with both protocols.
+func TestDownloadNoOverwriteWhileAsking(t *testing.T) {
+	for _, version := range []string{"2026-07-28", "2025-11-25"} {
+		t.Run(version, func(t *testing.T) {
+			a := newStackAgent(t)
+			ws, remote := t.TempDir(), t.TempDir()
+			os.WriteFile(filepath.Join(remote, "r.txt"), []byte("from the host"), 0o644)
+			srv, _ := stackServer(t, a, ProfileConfig{ReadPaths: []string{remote + "/**"}, Confirm: []string{"download"}},
+				func(c *Config) { c.Workspace = ws })
+			defer srv.Close()
+			mine := filepath.Join(ws, "notes.txt")
+			cs := stackClient(t, srv, version, &mcp.ClientOptions{ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+				if err := os.WriteFile(mine, []byte("the user's notes"), 0o600); err != nil {
+					t.Error(err)
+				}
+				return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, nil
+			}})
+			why := call(t, cs, "download", map[string]any{"remote": remote + "/r.txt", "local": "notes.txt"}, nil, true)
+			if b, _ := os.ReadFile(mine); !strings.Contains(why, "already exists") || string(b) != "the user's notes" {
+				t.Errorf("download: %s; the file now holds %q", why, b)
+			}
+		})
 	}
 }
 

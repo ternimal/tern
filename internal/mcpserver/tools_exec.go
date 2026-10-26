@@ -20,13 +20,13 @@ import (
 
 func (s *Server) addExecTools() error {
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
-	mcp.AddTool(s.mcp, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "list_targets",
 		Title:       "List targets",
 		Description: "List the remote hosts this server can reach, with each one's policy profile, whether it accepts shell mode and file writes, and which is the default.",
 		Annotations: readOnly,
 	}, s.handleTargets)
-	mcp.AddTool(s.mcp, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "agent_info",
 		Title:       "Agent info",
 		Description: "Describe a remote host: operating system, how it is reached, transport security, its policy profile, the commands and file paths that profile allows, the paths no profile allows, and whether the host can be reached.",
@@ -41,7 +41,7 @@ func (s *Server) addExecTools() error {
 		destructive := true // some profile allows commands that may change the host
 		runAnn = &mcp.ToolAnnotations{DestructiveHint: &destructive}
 	}
-	mcp.AddTool(s.mcp, &mcp.Tool{
+	addTool(s, &mcp.Tool{
 		Name:        "run",
 		InputSchema: runSchema,
 		Title:       "Run a command",
@@ -127,7 +127,7 @@ func (s *Server) handleRun(ctx context.Context, req *mcp.CallToolRequest, in Run
 			d, why = Deny, sw
 		}
 	}
-	if res, err := s.gate(req, &e, t, d, why, action, commandView("run a command", in.Argv, in.Shell, in.Stdin)); res != nil || err != nil {
+	if res, err := s.gate(ctx, req, &e, t, d, why, action, commandView("run a command", in.Argv, in.Shell, in.Stdin)); res != nil || err != nil {
 		return res, RunOutput{}, err
 	}
 	if err := s.logStart(e); err != nil {

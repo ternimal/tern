@@ -293,6 +293,9 @@ It does not change what an agent grants an authenticated client, so:
   approval is bound to the whole action, content included, used once and
   valid for five minutes. A client that approves without asking you defeats
   it; when a client cannot ask at all, actions that need approval are refused.
+  A client that takes the form but never answers holds the call for at most
+  five minutes, and then the action is refused: `tern mcp` cannot tell
+  whether a client showed the form.
 - **Redaction is a safety net.** Known secret formats are removed from results
   and from the audit log; secrets in other formats are not, nor a secret
   longer than the 8 KiB of text on each side that each paged read is

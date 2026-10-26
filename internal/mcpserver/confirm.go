@@ -4,12 +4,14 @@
 package mcpserver
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -26,8 +28,11 @@ import (
 // with the answer. The retry carries requestState back. Because the client
 // could alter it, requestState is an HMAC over the exact action, a fresh nonce
 // and an expiry: an approval cannot be replayed, reused, kept past its expiry
-// or moved to a different command. The guarantee ends at the client: it is
-// trusted to really show the form to the user.
+// or moved to a different command. A client on a protocol before 2026-07-28
+// cannot retry: addTool asks it with an elicitation/create request inside the
+// call, waits for the answer at most as long as an approval lasts, and retries
+// the call for it. The guarantee ends at the client: it is trusted to really
+// show the form to the user, and nothing it sends says whether it did.
 
 const (
 	confirmTTL      = 5 * time.Minute
@@ -50,6 +55,7 @@ type confirmer struct {
 	mu   sync.Mutex
 	used map[string]int64 // nonce -> expiry in Unix seconds, so an answer is used once
 	now  func() time.Time
+	wait time.Duration // longest wait for an answer asked inside a call
 }
 
 func newConfirmer() *confirmer {
@@ -57,7 +63,7 @@ func newConfirmer() *confirmer {
 	if _, err := rand.Read(key); err != nil {
 		panic(err) // crypto/rand does not fail on supported platforms
 	}
-	return &confirmer{key: key, used: map[string]int64{}, now: time.Now}
+	return &confirmer{key: key, used: map[string]int64{}, now: time.Now, wait: confirmTTL}
 }
 
 // expired reports whether a state that expires at exp, in Unix seconds, has
@@ -141,18 +147,28 @@ func (c *confirmer) check(action string, p *mcp.CallToolParamsRaw) (confirmStatu
 		return confirmRejected, "this confirmation was already used; ask again"
 	}
 	er, _ := p.InputResponses[confirmInputKey].(*mcp.ElicitResult)
-	switch {
-	case er == nil:
-		return confirmRejected, "no answer to the confirmation"
-	case er.Action == "decline":
-		return confirmRejected, "the user declined"
-	case er.Action != "accept":
-		return confirmRejected, "the user dismissed the confirmation"
-	}
-	if approve, _ := er.Content["approve"].(bool); !approve {
-		return confirmRejected, "the user did not approve"
+	if why := refusal(er); why != "" {
+		return confirmRejected, why
 	}
 	return confirmApproved, ""
+}
+
+// refusal says why an answer to the form is not an approval, or returns "" for
+// one. An answer says only accept, decline or cancel, never whether a person
+// saw the form.
+func refusal(er *mcp.ElicitResult) string {
+	switch {
+	case er == nil:
+		return "no answer to the confirmation"
+	case er.Action == "decline":
+		return "the user declined"
+	case er.Action != "accept":
+		return "the user dismissed the confirmation"
+	}
+	if approve, _ := er.Content["approve"].(bool); !approve {
+		return "the user did not approve"
+	}
+	return ""
 }
 
 // canAsk reports whether the calling client can show a form: it declared
@@ -165,6 +181,62 @@ func canAsk(req *mcp.CallToolRequest) bool {
 	caps := req.ClientCapabilities()
 	return caps != nil && caps.Elicitation != nil &&
 		(caps.Elicitation.Form != nil || caps.Elicitation.URL == nil)
+}
+
+// retryProtocol is the first protocol version whose clients answer an
+// input_required result by retrying the call.
+const retryProtocol = "2026-07-28"
+
+// retries reports whether the client retries a call that asks for input. It
+// is the SDK's own test, clientSupportsMultiRoundTrip in go-sdk's mrtr.go: a
+// session without initialize params speaks the newest protocol.
+func retries(req *mcp.CallToolRequest) bool {
+	if req.Session == nil {
+		return true
+	}
+	ip := req.Session.InitializeParams()
+	return ip == nil || ip.ProtocolVersion >= retryProtocol
+}
+
+// errNoAnswer ends the wait for an answer that does not come in time.
+var errNoAnswer = errors.New("no answer to the confirmation in time")
+
+// askNow asks a client that does not retry for the answers an input_required
+// result wants, waiting at most c.wait. It returns errNoAnswer when the wait
+// ends first, and the client's, the transport's or the call's own error when
+// asking fails.
+func (c *confirmer) askNow(ctx context.Context, ss *mcp.ServerSession, requests mcp.InputRequestMap) (mcp.InputResponseMap, error) {
+	ctx, cancel := context.WithTimeoutCause(ctx, c.wait, errNoAnswer)
+	defer cancel()
+	answers := mcp.InputResponseMap{}
+	for key, r := range requests {
+		p, ok := r.(*mcp.ElicitParams)
+		if !ok {
+			return nil, fmt.Errorf("cannot ask for a %T", r)
+		}
+		er, err := ss.Elicit(ctx, p)
+		if err != nil {
+			if errors.Is(context.Cause(ctx), errNoAnswer) {
+				return nil, errNoAnswer
+			}
+			return nil, err
+		}
+		answers[key] = er
+	}
+	return answers, nil
+}
+
+// unansweredKey marks the context of a call retried without an answer.
+type unansweredKey struct{}
+
+func withUnanswered(ctx context.Context, err error) context.Context {
+	return context.WithValue(ctx, unansweredKey{}, err)
+}
+
+// unanswered returns why the answers a call asked for never came, or nil.
+func unanswered(ctx context.Context) error {
+	err, _ := ctx.Value(unansweredKey{}).(error)
+	return err
 }
 
 // actionKey canonicalizes what a confirmation (or an idempotency key) is bound

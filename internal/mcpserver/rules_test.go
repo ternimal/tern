@@ -465,6 +465,12 @@ func TestConfirmPairs(t *testing.T) {
 // between the question and the approved retry, even to the same size and
 // mtime, is a different action and is not sent.
 func TestUploadApprovalBindsContent(t *testing.T) {
+	for _, version := range []string{"2026-07-28", "2025-11-25"} {
+		t.Run(version, func(t *testing.T) { testUploadApprovalBindsContent(t, version) })
+	}
+}
+
+func testUploadApprovalBindsContent(t *testing.T, version string) {
 	a := newStackAgent(t)
 	ws, remote := t.TempDir(), t.TempDir()
 	const v1 = "echo approved-content-v1\n"
@@ -488,7 +494,7 @@ func TestUploadApprovalBindsContent(t *testing.T) {
 		}
 		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, nil
 	}
-	cs := stackClient(t, srv, "", &mcp.ClientOptions{ElicitationHandler: handler})
+	cs := stackClient(t, srv, version, &mcp.ClientOptions{ElicitationHandler: handler})
 	args := map[string]any{"local": "deploy.sh", "remote": remote + "/deploy.sh"}
 	if why := call(t, cs, "upload", args, nil, true); !strings.Contains(why, "does not match this action") {
 		t.Errorf("upload of a file swapped after approval: %s", why)
