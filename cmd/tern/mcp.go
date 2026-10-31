@@ -42,6 +42,7 @@ func cmdMCP(args []string) {
 	persistPTYs := fs.Bool("persist-ptys", false, "leave the AI's terminals running when tern mcp exits and reattach them when it starts again with the same targets")
 	maxOutput := fs.Int("max-output", 256<<10, "default bytes of output or file content one call returns, at most 16 MiB (16777216)")
 	maxTimeout := fs.Duration("max-timeout", 5*time.Minute, "default cap on how long a run or job_start command may run, pty_run may wait, and a file write or transfer may take")
+	confirmWait := fs.Duration("confirm-wait", mcpserver.ConfirmWaitMax, "longest a call waits for the client to answer an approval form asked inside it, 1s to 5m; shorten it where the client answers by itself or never shows the form")
 	allowInsecure := fs.Bool("allow-insecure-transport", false, "DANGEROUS: permit the --insecure-* connection flags in mcp mode, where a man in the middle could inject instructions into command output")
 	verbose := addVerbose(fs)
 	tern.SetUsage(fs, "tern mcp [conn | --config FILE] [flags] - MCP server over stdio for AI clients")
@@ -52,7 +53,7 @@ func cmdMCP(args []string) {
 	tern.SetVerbose(*verbose)
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-	if err := checkLimits(*maxOutput, *maxTimeout); err != nil {
+	if err := checkLimits(*maxOutput, *maxTimeout, *confirmWait); err != nil {
 		log.Fatal(err)
 	}
 
@@ -78,6 +79,7 @@ func cmdMCP(args []string) {
 
 	cfg := mcpserver.Config{Version: version, MaxOutput: *maxOutput, MaxTimeout: *maxTimeout}
 	audit, persist, cfgFile, wsRelative := "", false, "", ""
+	var confirmFile time.Duration // confirm_wait from the config file
 	// The files that hold a target's login or say which agent to trust:
 	// the workspace tools never send them anywhere, whatever their names.
 	logins := []string{*cf.toFile, *cf.tokenFile, *cf.relayTokFile, *cf.key}
@@ -92,6 +94,9 @@ func cmdMCP(args []string) {
 		}
 		policies, err := mcpserver.BuildPolicies(c.Profiles)
 		if err != nil {
+			log.Fatalf("config: %v", err)
+		}
+		if confirmFile, err = c.confirmWait(); err != nil {
 			log.Fatalf("config: %v", err)
 		}
 		for _, name := range slices.Sorted(maps.Keys(c.Targets)) {
@@ -163,6 +168,10 @@ func cmdMCP(args []string) {
 	}
 	if set["persist-ptys"] {
 		persist = *persistPTYs
+	}
+	cfg.ConfirmWait = *confirmWait
+	if !set["confirm-wait"] && confirmFile > 0 {
+		cfg.ConfirmWait = confirmFile
 	}
 	if persist {
 		if cfg.PTYState = ptyStatePath(cfg.Targets); cfg.PTYState == "" {
@@ -274,12 +283,17 @@ func (t *target) info(name string) mcpserver.Target {
 const maxOutputCap = 16 << 20
 
 // checkLimits checks --max-output and --max-timeout.
-func checkLimits(maxOutput int, maxTimeout time.Duration) error {
+func checkLimits(maxOutput int, maxTimeout, confirmWait time.Duration) error {
 	if maxOutput <= 0 || maxOutput > maxOutputCap {
 		return fmt.Errorf("--max-output must be from 1 to %d (16 MiB)", maxOutputCap)
 	}
 	if maxTimeout <= 0 {
 		return errors.New("--max-timeout must be greater than zero")
+	}
+	// An approval lasts as long as ConfirmWaitMax, so waiting longer than
+	// that for one could only end in a refusal.
+	if confirmWait < mcpserver.ConfirmWaitMin || confirmWait > mcpserver.ConfirmWaitMax {
+		return fmt.Errorf("--confirm-wait must be from %s to %s", mcpserver.ConfirmWaitMin, mcpserver.ConfirmWaitMax)
 	}
 	return nil
 }

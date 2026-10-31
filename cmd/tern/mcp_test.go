@@ -82,24 +82,32 @@ func TestPathFlagsAreAbsolute(t *testing.T) {
 }
 
 // --max-output is at most 16 MiB, as a profile's limits.output_bytes is, and
-// both it and --max-timeout must be more than zero.
+// both it and --max-timeout must be more than zero, and --confirm-wait must
+// be from a second to the five minutes an approval lasts.
 func TestMCPLimitFlags(t *testing.T) {
 	for _, c := range []struct {
 		out     int
 		timeout time.Duration
+		confirm time.Duration
 		ok      bool
 	}{
-		{256 << 10, 5 * time.Minute, true},
-		{16 << 20, time.Second, true},
-		{1, time.Second, true},
-		{16<<20 + 1, time.Second, false},
-		{1 << 31, time.Second, false},
-		{0, time.Second, false},
-		{-1, time.Second, false},
-		{1, 0, false},
+		{256 << 10, 5 * time.Minute, 5 * time.Minute, true},
+		{16 << 20, time.Second, time.Second, true},
+		{1, time.Second, 30 * time.Second, true},
+		{16<<20 + 1, time.Second, time.Minute, false},
+		{1 << 31, time.Second, time.Minute, false},
+		{0, time.Second, time.Minute, false},
+		{-1, time.Second, time.Minute, false},
+		{1, 0, time.Minute, false},
+		// An approval lasts 5 minutes, so a longer wait for one, or one
+		// too short to answer at all, is refused.
+		{1, time.Second, 5*time.Minute + time.Second, false},
+		{1, time.Second, 999 * time.Millisecond, false},
+		{1, time.Second, 0, false},
+		{1, time.Second, -time.Second, false},
 	} {
-		if err := checkLimits(c.out, c.timeout); (err == nil) != c.ok {
-			t.Errorf("--max-output %d --max-timeout %v: %v", c.out, c.timeout, err)
+		if err := checkLimits(c.out, c.timeout, c.confirm); (err == nil) != c.ok {
+			t.Errorf("--max-output %d --max-timeout %v --confirm-wait %v: %v", c.out, c.timeout, c.confirm, err)
 		}
 	}
 }

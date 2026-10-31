@@ -371,7 +371,7 @@ func TestMacDataVolumeNames(t *testing.T) {
 // spent nonce is kept until its state has expired by the same whole-second
 // test that refuses an expired state, and is forgotten after that.
 func TestConfirmUsedOnceToTheEnd(t *testing.T) {
-	c := newConfirmer()
+	c := newConfirmer(0)
 	cur := time.Unix(1_800_000_000, 400_000_000) // part way into a second, as a real clock is
 	c.now = func() time.Time { return cur }
 	act := actionKey("run", "web1", map[string]any{"argv": []string{"systemctl", "restart", "nginx"}})

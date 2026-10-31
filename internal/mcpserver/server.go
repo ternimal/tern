@@ -78,9 +78,14 @@ type Config struct {
 	AuditPath     string
 	MaxOutput     int           // default cap on output or content returned by one call
 	MaxTimeout    time.Duration // default cap on a run's timeout
-	Workspace     string        // local directory for upload and download; "" disables them
-	RecordDir     string        // terminals are recorded as asciicasts here; "" records none
-	PTYState      string        // state file that lets terminals outlive the server; "" closes them at exit
+	// ConfirmWait is how long a call waits for a client that must be asked
+	// for an approval inside it to answer, ConfirmWaitMin to
+	// ConfirmWaitMax; 0 means the longest. Shorten it where a client
+	// answers approval forms by itself or never shows them.
+	ConfirmWait time.Duration
+	Workspace   string // local directory for upload and download; "" disables them
+	RecordDir   string // terminals are recorded as asciicasts here; "" records none
+	PTYState    string // state file that lets terminals outlive the server; "" closes them at exit
 	// TernDirs are the directories and files, absolute, where tern keeps its
 	// own state and configuration on this machine: token and key files, the
 	// config file, the audit log, recordings. The workspace tools never
@@ -142,7 +147,7 @@ func New(cfg Config) (*Server, error) {
 	if len(cfg.Targets) == 0 {
 		return nil, fmt.Errorf("no targets configured")
 	}
-	s := &Server{cfg: cfg, targets: map[string]*targetState{}, confirm: newConfirmer(), idem: newIdemCache(), jobs: map[string]*job{}, ptys: map[string]*ptyState{},
+	s := &Server{cfg: cfg, targets: map[string]*targetState{}, confirm: newConfirmer(cfg.ConfirmWait), idem: newIdemCache(), jobs: map[string]*job{}, ptys: map[string]*ptyState{},
 		castSlot: make(chan struct{}, 1)}
 	s.base, s.stopJobs = context.WithCancel(context.Background())
 	s.jobSlots = make(chan struct{}, maxRunningJobs)
@@ -322,8 +327,14 @@ func (s *Server) gate(ctx context.Context, req *mcp.CallToolRequest, e *AuditEnt
 	switch st, reason := s.confirm.check(action, p); st {
 	case confirmApproved:
 		e.Confirmed = true
+		s.noteAnswer(ctx, *e, p)
 		return nil, nil
 	case confirmRejected:
+		// An answer nobody can have seen is reported as the client's own,
+		// in place of a reason that would say the user declined.
+		if note := s.noteAnswer(ctx, *e, p); note != "" {
+			reason = note
+		}
 		return nil, s.deny(*e, reason)
 	}
 	if !canAsk(req) {
@@ -359,11 +370,12 @@ func addTool[In, Out any](s *Server, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out])
 			return res, out, err
 		}
 		params := *req.Params
-		answers, aerr := s.confirm.askNow(ctx, req.Session, res.InputRequests)
+		answers, took, aerr := s.confirm.askNow(ctx, req.Session, res.InputRequests)
 		if aerr != nil {
 			ctx = withUnanswered(ctx, aerr)
 		} else {
 			params.InputResponses, params.RequestState = answers, res.RequestState
+			ctx = withAnswerDelay(ctx, took)
 		}
 		retry := *req
 		retry.Params = &params

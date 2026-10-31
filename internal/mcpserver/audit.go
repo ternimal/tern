@@ -35,7 +35,7 @@ type Auditor struct {
 type AuditEntry struct {
 	TS         string `json:"ts"`
 	Seq        uint64 `json:"seq"`
-	Phase      string `json:"phase"` // start | end | error | denied | rejected | info | confirm_requested | replayed
+	Phase      string `json:"phase"` // start | end | error | denied | rejected | info | confirm_requested | confirm_answered | replayed
 	Client     string `json:"client,omitempty"`
 	Protocol   string `json:"protocol,omitempty"`
 	Tool       string `json:"tool"`
