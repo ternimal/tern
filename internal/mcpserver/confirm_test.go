@@ -28,7 +28,7 @@ func retry(state, action string, approve bool) *mcp.CallToolParamsRaw {
 }
 
 func TestConfirmRoundTrip(t *testing.T) {
-	c := newConfirmer()
+	c := newConfirmer(0)
 	act := actionKey("run", "web1", map[string]any{"argv": []string{"systemctl", "restart", "nginx"}})
 
 	if st, _ := c.check(act, &mcp.CallToolParamsRaw{}); st != confirmNeeded {
@@ -49,7 +49,7 @@ func TestConfirmRoundTrip(t *testing.T) {
 }
 
 func TestConfirmRejects(t *testing.T) {
-	c := newConfirmer()
+	c := newConfirmer(0)
 	act := actionKey("run", "web1", map[string]any{"argv": []string{"uptime"}})
 	other := actionKey("run", "web1", map[string]any{"argv": []string{"rm", "-rf", "/srv"}})
 
@@ -89,7 +89,7 @@ func TestConfirmRejects(t *testing.T) {
 	}
 
 	// A state signed by another server instance (another key) is rejected.
-	other2 := newConfirmer()
+	other2 := newConfirmer(0)
 	if st, _ := c.check(act, retry(other2.request(act, "m").RequestState, "accept", true)); st != confirmRejected {
 		t.Error("a state from another server instance must be rejected")
 	}
@@ -97,12 +97,14 @@ func TestConfirmRejects(t *testing.T) {
 
 // TestConfirmAskedInCall: a client on 2025-11-25 does not retry a call that
 // asks for input, so it is asked inside the call, and each answer decides the
-// call as it does on 2026-07-28.
+// call as it does on 2026-07-28. Here the answers come back at once, which no
+// person could have done, so each refusal names the client, not the user, and
+// the audit log keeps what the client answered and how fast.
 func TestConfirmAskedInCall(t *testing.T) {
 	a := newStackAgent(t)
 	prof := everything
 	prof.Confirm = []string{"run:shell"}
-	srv, _ := stackServer(t, a, prof, nil)
+	srv, audit := stackServer(t, a, prof, nil)
 	defer srv.Close()
 	var answer *mcp.ElicitResult
 	var asked []string
@@ -116,9 +118,9 @@ func TestConfirmAskedInCall(t *testing.T) {
 		approve bool
 		want    string
 	}{
-		{"decline", false, "the user declined"},
-		{"cancel", false, "dismissed"},
-		{"accept", false, "did not approve"},
+		{"decline", false, `the client answered "decline"`},
+		{"cancel", false, `the client answered "cancel"`},
+		{"accept", false, `the client answered "accept" without the approval ticked`},
 	} {
 		answer = &mcp.ElicitResult{Action: tc.action, Content: map[string]any{"approve": tc.approve}}
 		if msg := call(t, cs, "run", map[string]any{"argv": []string{"echo refused"}, "shell": true}, nil, true); !strings.Contains(msg, tc.want) {
@@ -134,6 +136,86 @@ func TestConfirmAskedInCall(t *testing.T) {
 	if len(asked) != 4 || !strings.Contains(asked[3], "echo approved") {
 		t.Fatalf("asked %q", asked)
 	}
+	// Every answer is logged with what it said and how long it took, so an
+	// operator can see that nobody was asked.
+	answers := auditPhase(t, audit, "confirm_answered")
+	if len(answers) != 4 {
+		t.Fatalf("%d confirm_answered lines, want 4: %v", len(answers), answers)
+	}
+	for i, want := range []string{"decline", "cancel", "accept", "accept"} {
+		took, _ := answers[i]["duration_ms"].(float64)
+		if answers[i]["reason"] != want || took < 1 || took >= float64(instantAnswer.Milliseconds()) {
+			t.Errorf("answer %d = %v, want %q in under %s", i, answers[i], want, instantAnswer)
+		}
+	}
+	if answers[3]["confirmed"] != true {
+		t.Errorf("an approved action must be logged as confirmed: %v", answers[3])
+	}
+}
+
+// TestConfirmAnswerFromAPerson: an answer that took long enough for someone to
+// read the form is reported as the user's and timed in the audit log.
+func TestConfirmAnswerFromAPerson(t *testing.T) {
+	a := newStackAgent(t)
+	prof := everything
+	prof.Confirm = []string{"run:shell"}
+	srv, audit := stackServer(t, a, prof, nil)
+	defer srv.Close()
+	handler := func(_ context.Context, _ *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		time.Sleep(instantAnswer + 100*time.Millisecond)
+		return &mcp.ElicitResult{Action: "decline", Content: map[string]any{"approve": false}}, nil
+	}
+	cs := stackClient(t, srv, "2025-11-25", &mcp.ClientOptions{ElicitationHandler: handler})
+	msg := call(t, cs, "run", map[string]any{"argv": []string{"echo refused"}, "shell": true}, nil, true)
+	if !strings.Contains(msg, "the user declined") || strings.Contains(msg, "the client answered") {
+		t.Fatalf("refusal: %q", msg)
+	}
+	answers := auditPhase(t, audit, "confirm_answered")
+	if len(answers) != 1 {
+		t.Fatalf("%d confirm_answered lines, want 1: %v", len(answers), answers)
+	}
+	if took, _ := answers[0]["duration_ms"].(float64); took < float64(instantAnswer.Milliseconds()) {
+		t.Errorf("the answer took %v ms, want at least %s in the log: %v", took, instantAnswer, answers[0])
+	}
+}
+
+// TestConfirmWaitBounds: the wait for an answer asked inside a call comes from
+// the configuration, held to what an approval's life allows.
+func TestConfirmWaitBounds(t *testing.T) {
+	for _, tc := range []struct{ in, want time.Duration }{
+		{0, ConfirmWaitMax},
+		{-time.Second, ConfirmWaitMax},
+		{ConfirmWaitMax + time.Minute, ConfirmWaitMax},
+		{time.Millisecond, ConfirmWaitMin},
+		{30 * time.Second, 30 * time.Second},
+	} {
+		if got := newConfirmer(tc.in).wait; got != tc.want {
+			t.Errorf("newConfirmer(%s) waits %s, want %s", tc.in, got, tc.want)
+		}
+	}
+	a := newStackAgent(t)
+	srv, _ := stackServer(t, a, everything, func(c *Config) { c.ConfirmWait = 12 * time.Second })
+	defer srv.Close()
+	if srv.confirm.wait != 12*time.Second {
+		t.Errorf("the server waits %s, want the configured 12s", srv.confirm.wait)
+	}
+}
+
+// auditPhase returns the audit entries of one phase, in order.
+func auditPhase(t *testing.T, path, phase string) []map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var e map[string]any
+		if json.Unmarshal([]byte(line), &e) == nil && e["phase"] == phase {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // TestConfirmNoAnswer: a client on 2025-11-25 that takes the form and never

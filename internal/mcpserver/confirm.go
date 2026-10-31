@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,18 @@ const (
 	maxShown        = 1000 // longest action a form shows; longer is refused, never cut
 	maxPreview      = 800  // bytes of the data an action carries that a form shows
 	maxPreviewLines = 20
+	// instantAnswer is the least time an answer takes when a person read the
+	// form first. A faster one came from the client itself: some clients
+	// answer an elicitation request without ever drawing it.
+	instantAnswer = time.Second
+)
+
+// ConfirmWaitMin and ConfirmWaitMax bound how long a call waits for a client
+// that must be asked inside it (see askNow). The longest is how long an
+// approval lasts: an answer after that could not be used anyway.
+const (
+	ConfirmWaitMin = time.Second
+	ConfirmWaitMax = confirmTTL
 )
 
 type confirmStatus int
@@ -58,12 +71,20 @@ type confirmer struct {
 	wait time.Duration // longest wait for an answer asked inside a call
 }
 
-func newConfirmer() *confirmer {
+// newConfirmer returns a confirmer that waits wait for an answer asked inside
+// a call, held to ConfirmWaitMin..ConfirmWaitMax; 0 means the longest.
+func newConfirmer(wait time.Duration) *confirmer {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		panic(err) // crypto/rand does not fail on supported platforms
 	}
-	return &confirmer{key: key, used: map[string]int64{}, now: time.Now, wait: confirmTTL}
+	switch {
+	case wait <= 0 || wait > ConfirmWaitMax:
+		wait = ConfirmWaitMax
+	case wait < ConfirmWaitMin:
+		wait = ConfirmWaitMin
+	}
+	return &confirmer{key: key, used: map[string]int64{}, now: time.Now, wait: wait}
 }
 
 // expired reports whether a state that expires at exp, in Unix seconds, has
@@ -205,25 +226,97 @@ var errNoAnswer = errors.New("no answer to the confirmation in time")
 // result wants, waiting at most c.wait. It returns errNoAnswer when the wait
 // ends first, and the client's, the transport's or the call's own error when
 // asking fails.
-func (c *confirmer) askNow(ctx context.Context, ss *mcp.ServerSession, requests mcp.InputRequestMap) (mcp.InputResponseMap, error) {
+func (c *confirmer) askNow(ctx context.Context, ss *mcp.ServerSession, requests mcp.InputRequestMap) (mcp.InputResponseMap, time.Duration, error) {
 	ctx, cancel := context.WithTimeoutCause(ctx, c.wait, errNoAnswer)
 	defer cancel()
+	begin := time.Now()
 	answers := mcp.InputResponseMap{}
 	for key, r := range requests {
 		p, ok := r.(*mcp.ElicitParams)
 		if !ok {
-			return nil, fmt.Errorf("cannot ask for a %T", r)
+			return nil, 0, fmt.Errorf("cannot ask for a %T", r)
 		}
 		er, err := ss.Elicit(ctx, p)
 		if err != nil {
 			if errors.Is(context.Cause(ctx), errNoAnswer) {
-				return nil, errNoAnswer
+				return nil, 0, errNoAnswer
 			}
-			return nil, err
+			return nil, 0, err
 		}
 		answers[key] = er
 	}
-	return answers, nil
+	return answers, time.Since(begin), nil
+}
+
+// answerDelayKey marks the context of a call retried with an answer the server
+// asked for inside the call, holding how long that answer took.
+type answerDelayKey struct{}
+
+func withAnswerDelay(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, answerDelayKey{}, d)
+}
+
+// answerDelay returns how long the client took to answer a form the server
+// asked inside the call, and whether that is known at all: a client on
+// 2026-07-28 or later answers by making a new call, which the server did not
+// time, and a call with no answer has no delay either.
+func answerDelay(ctx context.Context) (time.Duration, bool) {
+	d, ok := ctx.Value(answerDelayKey{}).(time.Duration)
+	return d, ok
+}
+
+// shortDur writes d for a person, keeping a sub-millisecond answer readable
+// rather than rounding it to 0s.
+func shortDur(d time.Duration) string {
+	if d < time.Millisecond {
+		return d.Round(time.Microsecond).String()
+	}
+	return d.Round(time.Millisecond).String()
+}
+
+// noteAnswer logs the client's answer to a confirmation form, with how long it
+// took, and returns what a refusal should add when the answer came back too
+// fast for anyone to have read the form. Nothing is logged for a call that
+// carries no answer, such as one whose state is forged or expired.
+func (s *Server) noteAnswer(ctx context.Context, e AuditEntry, p *mcp.CallToolParamsRaw) string {
+	if p == nil {
+		return ""
+	}
+	er, _ := p.InputResponses[confirmInputKey].(*mcp.ElicitResult)
+	if er == nil {
+		return ""
+	}
+	e.Phase, e.Reason = "confirm_answered", er.Action
+	d, known := answerDelay(ctx)
+	if known {
+		// Rounded up, so an answer faster than a millisecond is still
+		// logged as a time rather than left out as a zero.
+		e.DurationMS = int64((d + time.Millisecond - 1) / time.Millisecond)
+	}
+	s.logOrWarn(e)
+	if !known || d >= instantAnswer {
+		return ""
+	}
+	if refusal(er) == "" {
+		// A client that approves this fast approves for the user, which
+		// defeats the point of asking; it cannot be told apart from one
+		// the user has told to approve everything, so this only warns.
+		slog.Warn("the client approved an action without a person having time to read the form; it may be answering approval forms by itself",
+			"tool", e.Tool, "target", e.Target, "took", shortDur(d))
+		return ""
+	}
+	return clientAnswer(er) + " in " + shortDur(d) +
+		", too fast for anyone to have read the form, so it most likely answered by itself instead of showing it; allow this action in the profile, or approve it from a client that shows approval forms"
+}
+
+// clientAnswer describes an answer that reached the server too fast to be a
+// person's, so the refusal says what the client did instead of putting words
+// in the user's mouth.
+func clientAnswer(er *mcp.ElicitResult) string {
+	if er.Action == "accept" {
+		return `the client answered "accept" without the approval ticked`
+	}
+	return fmt.Sprintf("the client answered %q", er.Action)
 }
 
 // unansweredKey marks the context of a call retried without an answer.

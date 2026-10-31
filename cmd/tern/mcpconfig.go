@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ternimal/tern/internal/mcpserver"
 	tern "github.com/ternimal/tern/internal/tern"
@@ -27,6 +28,11 @@ type mcpConfig struct {
 	AuditLog      string                             `json:"audit_log"`
 	RecordDir     string                             `json:"record_dir"`
 	PersistPTYs   bool                               `json:"persist_ptys"`
+	// ConfirmWait is how long a call waits for the client to answer an
+	// approval form asked inside it, such as "30s"; empty means the
+	// default. A client that answers by itself or never shows the form
+	// cannot approve anything, so a short wait refuses sooner.
+	ConfirmWait string `json:"confirm_wait"`
 
 	// wsRelative is the workspace as written, when that is a relative path,
 	// which resolvePaths takes from the config file's directory.
@@ -50,6 +56,22 @@ type targetConfig struct {
 	TokenFile        string `json:"token_file"`
 	Key              string `json:"key"`
 	Profile          string `json:"profile"`
+}
+
+// confirmWait is confirm_wait as a duration; 0 when the file leaves it out,
+// which means the server's default.
+func (c *mcpConfig) confirmWait() (time.Duration, error) {
+	if c.ConfirmWait == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(c.ConfirmWait)
+	if err != nil {
+		return 0, fmt.Errorf("confirm_wait %q is not a duration such as %q", c.ConfirmWait, "30s")
+	}
+	if d < mcpserver.ConfirmWaitMin || d > mcpserver.ConfirmWaitMax {
+		return 0, fmt.Errorf("confirm_wait %s is outside %s to %s", d, mcpserver.ConfirmWaitMin, mcpserver.ConfirmWaitMax)
+	}
+	return d, nil
 }
 
 // loadMCPConfig reads path strictly: an unknown field is an error, which

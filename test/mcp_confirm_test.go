@@ -80,6 +80,15 @@ func testConfirmation(t *testing.T, a agent, version string) {
 		return o.Output
 	}
 	exists := func(name string) bool { _, err := os.Stat(filepath.Join(area, name)); return err == nil }
+	// A client before 2026-07-28 is asked inside the call, which times the
+	// answer, and fakeUser answers at once, which no person reading the form
+	// could: the refusal then says what the client answered instead of
+	// saying that the user declined.
+	declined, unticked := "the user declined", "did not approve"
+	if version < "2026-07-28" {
+		declined = `the client answered "decline"`
+		unticked = `the client answered "accept" without the approval ticked`
+	}
 
 	// Allowlisted commands run without asking.
 	user.set("accept", true)
@@ -99,14 +108,14 @@ func testConfirmation(t *testing.T, a agent, version string) {
 	// Declined, it does not run.
 	user.set("decline", false)
 	res = callTool(t, sess, "run", map[string]any{"shell": true, "argv": []string{"echo nope > " + area + "/declined"}})
-	if !res.IsError || !strings.Contains(resultText(res), "declined") || exists("declined") {
+	if !res.IsError || !strings.Contains(resultText(res), declined) || exists("declined") {
 		t.Fatalf("a declined command must not run: %q", resultText(res))
 	}
 
 	// Accepting the form without ticking the box is not an approval.
 	user.set("accept", false)
 	res = callTool(t, sess, "run", map[string]any{"shell": true, "argv": []string{"echo nope > " + area + "/unticked"}})
-	if !res.IsError || !strings.Contains(resultText(res), "did not approve") || exists("unticked") {
+	if !res.IsError || !strings.Contains(resultText(res), unticked) || exists("unticked") {
 		t.Fatalf("an unticked approval must not run: %q", resultText(res))
 	}
 
@@ -136,6 +145,10 @@ func testConfirmation(t *testing.T, a agent, version string) {
 	log, _ := os.ReadFile(audit)
 	if n := strings.Count(string(log), `"phase":"confirm_requested"`); n != 6 {
 		t.Errorf("confirm_requested entries = %d, want 6", n)
+	}
+	// Every answer is logged too, whichever way the client was asked.
+	if n := strings.Count(string(log), `"phase":"confirm_answered"`); n != 6 {
+		t.Errorf("confirm_answered entries = %d, want 6", n)
 	}
 	if n := strings.Count(string(log), `"confirmed":true`); n < 3 {
 		t.Errorf("approved actions should be marked confirmed in the audit log (%d)", n)

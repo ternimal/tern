@@ -155,11 +155,12 @@ the client show a server that fails every call.
 | `audit_log` | the audit log (default `$XDG_STATE_HOME/tern/mcp-audit.jsonl`, `~/.local/state/...`, or `%LocalAppData%\tern\...` on Windows) |
 | `record_dir` | record each terminal the AI opens as an asciicast here |
 | `persist_ptys` | leave terminals running when `tern mcp` exits and reattach them next time |
+| `confirm_wait` | how long a call waits for the client to answer an approval form asked inside it, such as `"30s"`, from `1s` to the `5m` an approval lasts; the default is `5m`. Shorten it where the client takes the form and never shows it |
 
-The same settings exist as flags: `--workspace`, `--audit-log`, `--record-dir`
-and `--persist-ptys` (paths absolute or from `~`, as above), plus `--max-output`
-(default 256 KiB per call, at most 16 MiB) and `--max-timeout` (default 5
-minutes): the longest timeout `run`, `job_start` and `pty_run` accept, how
+The same settings exist as flags: `--workspace`, `--audit-log`, `--record-dir`,
+`--persist-ptys` and `--confirm-wait` (paths absolute or from `~`, as above),
+plus `--max-output` (default 256 KiB per call, at most 16 MiB) and
+`--max-timeout` (default 5 minutes): the longest timeout `run`, `job_start` and `pty_run` accept, how
 long a job runs unless it asks for less, and how long `write_file`, `upload`
 and `download` may take; `run` and `pty_run` wait 30 seconds, or that
 longest timeout where it is shorter, unless the call gives `timeout_s`. A
@@ -472,13 +473,25 @@ prompt. Whether a client that declares it really shows the form, `tern mcp`
 cannot see: an answer only says accept, decline or cancel. A client on MCP
 2026-07-28 answers by sending the call again, and an approval sent more than 5
 minutes after the form was issued is refused. A client on 2025-11-25 or earlier
-is asked inside the call, which waits at most 5 minutes for the answer and
-then runs again with it, every check included; with no answer by then the call
-is refused and nothing is done. Some clients declare forms but never show them:
-with one of those, an action that needs approval cannot run, so allow it in the
-profile or use a client that shows the form. A client that answers without
+is asked inside the call, which waits for the answer at most as long as
+`confirm_wait` allows, 5 minutes by default, and then runs again with it, every
+check included; with no answer by then the call is refused and nothing is done.
+
+Some clients declare forms and never show them. Claude Code's VS Code
+extension, the Claude desktop app, the Code tab on claude.ai and a session
+followed over Remote Control answer by themselves, so the server is told
+`decline` for a form nobody saw (anthropics/claude-code#41292 and #89858). With
+one of those, an action that needs approval cannot run. An answer that comes
+back in under a second is nobody's, so the refusal says what the client
+answered and how long it took, rather than that you declined, and the audit log
+keeps the same as `confirm_answered`. Allow the action in the profile, or
+approve it from a client that shows the form, such as `claude` in a terminal.
+Where a client takes the form and never answers at all, `confirm_wait` decides
+how long the call waits before it is refused. A client that answers without
 asking you defeats the approval, whether it refuses every action or approves it
-without you.
+without you: one that approves in under a second is logged with how fast it
+answered and warned about on stderr, but its approval still counts, since a
+client you have told to approve everything looks exactly the same.
 
 ## Terminals
 
@@ -575,8 +588,10 @@ recording (`agent_info` and `list_sessions`, which reach the agent, log `start`
 first; `read_file` and `download` log `start` and `end`), `denied` with the
 reason, `rejected` for a call that does not match the tool's input schema
 (other bad arguments are `denied` with the reason), `confirm_requested` when
-you are asked, and `replayed` for an idempotent resend; an action you approved
-carries `"confirmed": true`. Output itself is not logged, only its size. If the
+you are asked, `confirm_answered` when the answer arrives, with the answer in
+`reason` and, for a form asked inside the call, how long it took in
+`duration_ms`, rounded up, and `replayed` for an idempotent resend; an action
+you approved carries `"confirmed": true`. Output itself is not logged, only its size. If the
 log cannot be written, `tern mcp` refuses to act: an action is refused before
 it starts (nothing reaches the agent, a shell-mode command's OS probe included,
 and a download makes no directory), and a listing or reading tool returns an

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	tern "github.com/ternimal/tern/internal/tern"
 )
@@ -103,5 +104,49 @@ func TestConfigPathRules(t *testing.T) {
 		if p, err := configPath(`D:\cfg`, `\keys\id`); err != nil || p != `D:\keys\id` {
 			t.Errorf("a path from the root of the drive: %q %v", p, err)
 		}
+	}
+}
+
+// confirm_wait is read as a duration and held to what an approval's life
+// allows, so a client that answers approval forms by itself can be made to
+// refuse an action in seconds rather than minutes.
+func TestConfigConfirmWait(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "mcp.json")
+	targets := `"targets": {"web1": {"addr": "10.0.0.5:2222", "fingerprint": "` + strings.Repeat("ab", 32) + `", "token_env": "TERN_TOKEN"}}`
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+		ok    bool
+	}{
+		{`, "confirm_wait": "30s"`, 30 * time.Second, true},
+		{`, "confirm_wait": "1s"`, time.Second, true},
+		{`, "confirm_wait": "5m"`, 5 * time.Minute, true},
+		{``, 0, true}, // left out: the server's default
+		{`, "confirm_wait": "5m1s"`, 0, false},
+		{`, "confirm_wait": "999ms"`, 0, false},
+		{`, "confirm_wait": "0s"`, 0, false},
+		{`, "confirm_wait": "soon"`, 0, false},
+		{`, "confirm_wait": "30"`, 0, false},
+	} {
+		if err := os.WriteFile(cfg, []byte("{"+targets+tc.value+"}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := loadMCPConfig(cfg)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.value, err)
+		}
+		got, err := c.confirmWait()
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("confirm_wait%s: %s %v, want %s ok=%v", tc.value, got, err, tc.want, tc.ok)
+		}
+	}
+	// An unknown field is still refused, so a typo cannot pass for the
+	// setting and leave the long wait in place.
+	if err := os.WriteFile(cfg, []byte("{"+targets+`, "confirm_timeout": "30s"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadMCPConfig(cfg); err == nil {
+		t.Error("an unknown field must stop tern mcp")
 	}
 }
