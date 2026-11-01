@@ -120,7 +120,7 @@ func (a *stackAgent) sessions(t *testing.T) []string {
 // stackServer builds a server with one target, "box", on agent a.
 func stackServer(t *testing.T, a *stackAgent, prof ProfileConfig, edit func(*Config)) (*Server, string) {
 	t.Helper()
-	pols, err := BuildPolicies(map[string]ProfileConfig{"p": prof})
+	pols, err := BuildPolicies(map[string]ProfileConfig{"p": prof}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

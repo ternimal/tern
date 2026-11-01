@@ -78,7 +78,7 @@ func TestCheckRead(t *testing.T) {
 // A Windows agent opens "x.key." as x.key, SSH~1 as .ssh and "x::$DATA" as x,
 // so such aliases must not walk around a secret-path rule.
 func TestWindowsAliasesRefused(t *testing.T) {
-	ps, err := BuildPolicies(map[string]ProfileConfig{"home": {ReadPaths: []string{"/c:/users/**", "/c:/srv/**", "/c:/programdata/**", "/srv/**", "/windows/**"}}})
+	ps, err := BuildPolicies(map[string]ProfileConfig{"home": {ReadPaths: []string{"/c:/users/**", "/c:/srv/**", "/c:/programdata/**", "/srv/**", "/windows/**"}}}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

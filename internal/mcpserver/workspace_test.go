@@ -274,7 +274,7 @@ func TestLinkedRuleDirectoriesIntoWorkspace(t *testing.T) {
 	}
 	keys := t.TempDir()
 	os.Symlink(keys, filepath.Join(os.Getenv("HOME"), ".kube"))
-	pols, _ := BuildPolicies(nil)
+	pols, _ := BuildPolicies(nil, SecretPathsConfig{})
 	_, err := New(Config{Version: "test", AuditPath: filepath.Join(t.TempDir(), "audit.jsonl"), Workspace: keys,
 		Targets: []TargetSpec{{Target: Target{Name: "box"}, Policy: pols["readonly"], Dial: a.dial}}})
 	if err == nil || !strings.Contains(err.Error(), "through a link") || !strings.Contains(err.Error(), "choose another directory") {

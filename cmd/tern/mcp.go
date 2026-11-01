@@ -92,7 +92,8 @@ func cmdMCP(args []string) {
 		if err != nil {
 			log.Fatalf("config: %v", err)
 		}
-		policies, err := mcpserver.BuildPolicies(c.Profiles)
+		cfg.SecretPaths = c.SecretPaths
+		policies, err := mcpserver.BuildPolicies(c.Profiles, c.SecretPaths)
 		if err != nil {
 			log.Fatalf("config: %v", err)
 		}

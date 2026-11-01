@@ -309,6 +309,7 @@ type InfoOutput struct {
 	WorldReadableOnly []string `json:"world_readable_only" jsonschema:"read patterns under which only files every user may read are served, also where a link from elsewhere leads into them, unless read patterns the profile added itself name both the path and where it leads"`
 	AllowedWritePaths []string `json:"allowed_write_paths"`
 	NeverReadable     []string `json:"never_readable" jsonschema:"path patterns no profile can read or write, credential stores and keys among them, also through a link; they match without regard to case"`
+	SecretExceptions  []string `json:"secret_exceptions,omitempty" jsonschema:"path patterns the config file lifts the never_readable rules for, so those paths are read and written like any other where this profile allows them"`
 	NeverWritable     []string `json:"never_writable" jsonschema:"path patterns no profile can write, though a profile may read them: places where a file runs code or grants access later"`
 	ConfirmActions    []string `json:"confirm_actions" jsonschema:"actions that ask the user for approval each time"`
 	ConfirmUnlisted   bool     `json:"confirm_unlisted" jsonschema:"true when commands outside allowed_commands may run after the user approves them"`
@@ -342,7 +343,7 @@ func (s *Server) handleInfo(ctx context.Context, req *mcp.CallToolRequest, in In
 		OS: osName, OSDetail: detail, Reachable: perr == nil, TernVersion: s.cfg.Version, Profile: p.Profile,
 		AllowedCommands: p.AllowedCommands(), ShellAllowed: p.ShellAllowed(),
 		AllowedReadPaths: p.AllowedReadPaths(), WorldReadableOnly: worldReadableOnly(p), AllowedWritePaths: nonNil(p.AllowedWritePaths()),
-		NeverReadable: slices.Clone(secretPaths), NeverWritable: slices.Clone(noWritePaths),
+		NeverReadable: p.NeverReadable(), SecretExceptions: p.SecretExceptions(), NeverWritable: slices.Clone(noWritePaths),
 		ConfirmActions: p.ConfirmActions(), ConfirmUnlisted: p.ConfirmsUnlisted(), PTYAllowed: p.PTYAllowed(),
 	}
 	e.Reason = "os: " + osName

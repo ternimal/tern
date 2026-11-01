@@ -102,7 +102,7 @@ func TestAuditEveryCall(t *testing.T) {
 // id.
 func TestJobStartDialFailureLogged(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "log.jsonl")
-	pols, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{"true"}}}}})
+	pols, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{"true"}}}}}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

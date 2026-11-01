@@ -78,6 +78,10 @@ type Config struct {
 	AuditPath     string
 	MaxOutput     int           // default cap on output or content returned by one call
 	MaxTimeout    time.Duration // default cap on a run's timeout
+	// SecretPaths changes the paths no profile may read or write, and the
+	// ones a download may not create in the workspace, server-wide. A
+	// profile's own secret_paths adds to it.
+	SecretPaths SecretPathsConfig
 	// ConfirmWait is how long a call waits for a client that must be asked
 	// for an approval inside it to answer, ConfirmWaitMin to
 	// ConfirmWaitMax; 0 means the longest. Shorten it where a client

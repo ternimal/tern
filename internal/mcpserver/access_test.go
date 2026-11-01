@@ -540,7 +540,7 @@ func TestWorkspaceMatchedByARuleRefused(t *testing.T) {
 	os.MkdirAll(filepath.Join(base, "home", ".ssh"), 0o700)
 	os.Symlink(filepath.Join(base, "home", ".ssh"), filepath.Join(base, "keys"))
 	newServer := func(ws string) error {
-		pols, _ := BuildPolicies(nil)
+		pols, _ := BuildPolicies(nil, SecretPathsConfig{})
 		srv, err := New(Config{Version: "test", AuditPath: filepath.Join(t.TempDir(), "audit.jsonl"), Workspace: ws,
 			TernDirs: []string{state}, Targets: []TargetSpec{{Target: Target{Name: "box"}, Policy: pols["readonly"], Dial: a.dial}}})
 		if err == nil {
@@ -553,7 +553,7 @@ func TestWorkspaceMatchedByARuleRefused(t *testing.T) {
 		{filepath.Join(base, "home", ".ssh", "work"), `secret-path rule "**/.ssh/**"`},
 		{filepath.Join(base, "keys"), `secret-path rule "**/.ssh/**"`},
 		{filepath.Join(base, "keys", "new"), `secret-path rule "**/.ssh/**"`},
-		{filepath.Join(base, "tokenizer-work"), `secret-path rule "**/*token*/**"`},
+		{filepath.Join(base, "secret-volume"), `secret-path rule "**/secret-*/**/*"`},
 		{filepath.Join(base, "home", ".config", "autostart"), `persistence-point rule "**/.config/autostart/**"`},
 		{filepath.Join(base, "home", ".local", "state", "tern"), `secret-path rule "**/.local/state/tern/**"`},
 		{filepath.Join(base, "home", ".claude", "work"), `secret-path rule "**/.claude/**"`},
@@ -661,7 +661,7 @@ func TestWorkspaceInsideSSHDirectoryUploadsNothing(t *testing.T) {
 	ws := filepath.Join(t.TempDir(), "home", ".ssh")
 	os.MkdirAll(ws, 0o700)
 	os.WriteFile(filepath.Join(ws, "id_ed25519"), []byte("-----FAKE OPENSSH PRIVATE KEY for a test-----\n"), 0o600)
-	pols, _ := BuildPolicies(map[string]ProfileConfig{"p": {WritePaths: []string{remote + "/**"}}})
+	pols, _ := BuildPolicies(map[string]ProfileConfig{"p": {WritePaths: []string{remote + "/**"}}}, SecretPathsConfig{})
 	srv, err := New(Config{Version: "test", AuditPath: filepath.Join(t.TempDir(), "audit.jsonl"), Workspace: ws,
 		Targets: []TargetSpec{{Target: Target{Name: "box"}, Policy: pols["p"], Dial: a.dial}}})
 	if err == nil {
@@ -799,7 +799,7 @@ func TestInterpreterAndManagerWrapperNames(t *testing.T) {
 		if d, _ := cu.RunDecision([]string{name, "x"}, false); d != Deny {
 			t.Errorf("confirm_unlisted offers %s", name)
 		}
-		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{name, "**"}}}}}); err == nil {
+		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{name, "**"}}}}}, SecretPathsConfig{}); err == nil {
 			t.Errorf("a pattern names %s without allow_wrappers", name)
 		}
 	}
@@ -911,7 +911,7 @@ func TestSandboxAndTaskRunnerWrapperNames(t *testing.T) {
 		if d, _ := cu.RunDecision([]string{name, "x"}, false); d != Deny {
 			t.Errorf("confirm_unlisted offers %s", name)
 		}
-		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{name, "**"}}}}}); err == nil {
+		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{name, "**"}}}}}, SecretPathsConfig{}); err == nil {
 			t.Errorf("a pattern names %s without allow_wrappers", name)
 		}
 	}

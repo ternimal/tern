@@ -18,7 +18,7 @@ func TestBuildPolicies(t *testing.T) {
 			Limits:     Limits{TimeoutS: 120, OutputBytes: 1 << 20},
 		},
 		"oncall": {Extends: "ops", Run: RunConfig{Shell: true}},
-	})
+	}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,12 +85,12 @@ func TestBuildPoliciesRejects(t *testing.T) {
 		{"unknown confirm", map[string]ProfileConfig{"a": {Confirm: []string{"pty_send"}}}, "pty_open"},
 	}
 	for _, c := range cases {
-		if _, err := BuildPolicies(c.cfg); err == nil || !strings.Contains(err.Error(), c.want) {
+		if _, err := BuildPolicies(c.cfg, SecretPathsConfig{}); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err = %v, want it to mention %q", c.name, err, c.want)
 		}
 	}
 	// An explicit opt-in allows a wrapper pattern.
-	pols, err := BuildPolicies(map[string]ProfileConfig{"py": {Run: RunConfig{AllowWrappers: true, Allow: [][]string{{"python3", "/opt/tool.py", "**"}}}}})
+	pols, err := BuildPolicies(map[string]ProfileConfig{"py": {Run: RunConfig{AllowWrappers: true, Allow: [][]string{{"python3", "/opt/tool.py", "**"}}}}}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestBuildPoliciesRejects(t *testing.T) {
 }
 
 func TestCheckWrite(t *testing.T) {
-	pols, _ := BuildPolicies(map[string]ProfileConfig{"w": {WritePaths: []string{"/srv/app/**", "/*:/deploy/**"}}})
+	pols, _ := BuildPolicies(map[string]ProfileConfig{"w": {WritePaths: []string{"/srv/app/**", "/*:/deploy/**"}}}, SecretPathsConfig{})
 	w := pols["w"]
 	for _, p := range []string{"/srv/app/config.yml", "/srv/app/sub/x", `C:\deploy\app.ini`, "c:/DEPLOY/x"} {
 		if _, ok, why := w.CheckWrite(p); !ok {
@@ -182,7 +182,7 @@ func TestPTYDecisions(t *testing.T) {
 		"guarded": {Extends: "ops", Confirm: []string{"run:shell"}},
 		"strict":  {Extends: "ops", Confirm: []string{"run", "pty_open"}},
 		"inherit": {Extends: "ops"},
-	})
+	}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestPTYDecisions(t *testing.T) {
 // mustPol builds the profile p, failing the test if it is refused.
 func mustPol(t *testing.T, p ProfileConfig) *Policy {
 	t.Helper()
-	pols, err := BuildPolicies(map[string]ProfileConfig{"p": p})
+	pols, err := BuildPolicies(map[string]ProfileConfig{"p": p}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

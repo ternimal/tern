@@ -155,6 +155,7 @@ the client show a server that fails every call.
 | `audit_log` | the audit log (default `$XDG_STATE_HOME/tern/mcp-audit.jsonl`, `~/.local/state/...`, or `%LocalAppData%\tern\...` on Windows) |
 | `record_dir` | record each terminal the AI opens as an asciicast here |
 | `persist_ptys` | leave terminals running when `tern mcp` exits and reattach them next time |
+| `secret_paths` | `add` names more paths that no profile may read or write; `except` lifts those rules for the paths it names, built-in rules included. Both hold for every target and in the workspace; a profile's own `secret_paths` adds to them. See the rules below |
 | `confirm_wait` | how long a call waits for the client to answer an approval form asked inside it, such as `"30s"`, from `1s` to the `5m` an approval lasts; the default is `5m`. Shorten it where the client takes the form and never shows it |
 
 The same settings exist as flags: `--workspace`, `--audit-log`, `--record-dir`,
@@ -186,6 +187,7 @@ redefined.
 | `run.confirm_unlisted` | a command outside the allowlist asks the user instead of failing; wrappers stay refused |
 | `read_paths`, `write_paths` | path patterns for `read_file`/`download` and `write_file`/`upload`: absolute, or starting with `**`, with `*` for one segment and `**` for any number, and no `..`. Windows paths are written `/c:/...` and match without case. A path that a profile lists here is read whatever its mode where the file it leads to is listed too. A link from it to a place the profile does not list reaches what that place shows, but only a file every user may read where the link is under `/etc`, leads into `/etc` or leads out of every readable path |
 | `confirm` | actions that need the user's approval every time: `run`, `run:shell`, `read_file`, `write_file`, `upload`, `download`, `pty_open`; `write_file` and `upload` confirm each other, as do `read_file` and `download` |
+| `secret_paths` | `add` and `except` for the targets that use this profile, on top of the server-wide ones; see the rules below |
 | `pty` | allow interactive terminals (the `pty_*` tools). Needs `run.shell`, since a terminal runs anything typed into it |
 | `limits` | `timeout_s` (up to 86400), `output_bytes` (up to 16 MiB), `terminals` open at once per target (1 to 16, default 4; at most 16 on all targets together), `terminal_idle_s` before an unused terminal is closed (60 to 86400, default 600) |
 
@@ -212,11 +214,19 @@ every `mcp.json` and `.mcp.json` and the other MCP server lists, Zed's
 `settings.json` in a project's `.zed/` and the user's, Continue's `.continue/`,
 OpenCode's `opencode.json` and `~/.config/opencode`, Goose's configuration,
 Crush's `crush.json`, Qwen Code's `.qwen/`, `~/.config/anthropic`, `.codex/`
-and `.gemini/`), files in directories named for secrets, credentials or tokens
-(`/run/secrets`, Kubernetes' `/var/run/secrets`, systemd's runtime credentials
-and credential stores `/etc/credstore`, `/run/credstore`, `/usr/lib/credstore`
-and their `.encrypted` twins; a Kubernetes secret volume mounted under another
-name is not caught), service credentials under `/etc` (sssd, nslcd, Kerberos
+and `.gemini/`), files and directories named for what they hold: the
+words `secret`, `secrets`, `credential`, `credentials`, `token` and `tokens`
+as the whole name, as a dotfile, with an extension, or at either end of a name
+next to a `.`, `_` or `-`, and everything inside a directory named that way, so
+`credentials.json`, `aws_credentials`, `client_secret.json`,
+`token-cache.json`, `/run/secrets`, Kubernetes' `/var/run/secrets`, a secret
+volume mounted at `/etc/secret-volume`, systemd's runtime credentials and the
+credential stores `/etc/credstore`, `/run/credstore` and `/usr/lib/credstore`
+with their `.encrypted` twins are all caught, while one of those words inside a
+longer name is not: `tokenizer.py`, `secretary-notes.txt` and a sweep called
+`host-credential-sweep.txt` are ordinary files. Up to v1.0.3 any name holding
+one of the words anywhere was refused, which named far more files than it
+protected, service credentials under `/etc` (sssd, nslcd, Kerberos
 KDC stashes, Samba, Redis, Wi-Fi, OpenVPN logins, `.htpasswd`, mail relays,
 SNMP, GitLab), and process memory, environment and links such as
 `/proc/<pid>/root` under `/proc`. The list is best effort; keep `read_paths`
@@ -293,6 +303,47 @@ user, so there the rules about files every user may read let through any
 file the secret-path rules do not refuse. A hard link is not caught: it is
 the same file under a second name, so do not let the model read a tree where
 others can link to secret files.
+
+All of these rules hold in the workspace as well, with one difference: the
+rules that match a **name** do not stop a download from creating a file.
+What a new file is called says nothing about what it holds, so `download` may
+write `host-credential-sweep.txt`, `credentials.json` or `server.pem` into a
+workspace of its own, while the rules that match a **place** still hold there:
+nothing is created in `~/.ssh`, in tern's own directories, where a link in the
+workspace leads into a credential store, or under a name an AI client reads its
+MCP server list from, and the never-writable rules still hold too. Reading a
+local file to upload is matched against every rule, name rules included, so a
+key that sits in the workspace is never sent to an agent.
+
+Both lists can be changed in the config file, server-wide under `secret_paths`
+and for one profile under the same key inside it. `add` names more paths that
+are never readable or writable, for a credential store of your own that the
+built-in list does not know. `except` lifts the secret-path rules for the paths
+it names, the built-in ones included, for the files the rules name but you know
+are not secrets, such as a sweep whose name holds the word `credential` or a
+source file called `token_test.go`. An exception is a deliberate hole: those
+paths are then read and written wherever the profile allows them, so name the
+files or directories you mean and never a tree you have not looked at; a
+pattern that matches every path is refused. It lifts the secret-path rules
+only: the never-writable rules still hold, and a path still has to be inside
+the profile's `read_paths` or `write_paths` to be reached at all. `agent_info`
+reports the rules that hold and the exceptions beside them, so the model is
+told what the operator changed.
+
+```json
+{
+  "secret_paths": {
+    "add": ["/srv/vault/**"],
+    "except": ["/srv/sweeps/**"]
+  },
+  "profiles": {
+    "audit": {
+      "read_paths": ["/srv/app/**"],
+      "secret_paths": { "except": ["/srv/app/token_test.go"] }
+    }
+  }
+}
+```
 
 ## Tools
 

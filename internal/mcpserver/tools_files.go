@@ -848,8 +848,15 @@ type ruleList struct {
 // rules and tern's own files, and for a file a download creates the
 // persistence-point rules too; each also where a link whose own name it
 // matches leads.
+//
+// For a file a download creates, only the secret-path rules that name a place
+// hold (see secretPlaces): what a new file is called says nothing about what
+// it holds, while the place it lands in does. Reading a local file to upload
+// is matched against all of them, so a key in the workspace is still never
+// sent to an agent.
 func (s *Server) localLists(create bool) []ruleList {
-	lists := []ruleList{{rules: secretPaths, kind: secretKind}, {rules: s.ternDirs, kind: ownKind}}
+	secret := s.secretRules(create)
+	lists := []ruleList{{rules: secret, kind: secretKind}, {rules: s.ternDirs, kind: ownKind}}
 	if create {
 		lists = append(lists, ruleList{rules: noWritePaths, kind: persistKind})
 	}
@@ -859,6 +866,16 @@ func (s *Server) localLists(create bool) []ruleList {
 		}
 	}
 	return lists
+}
+
+// secretRules returns the secret-path rules that hold in the workspace, the
+// config file's own additions included, for reading a file to upload or for
+// creating one.
+func (s *Server) secretRules(create bool) []string {
+	if !create {
+		return slices.Concat(secretPaths, s.cfg.SecretPaths.Add)
+	}
+	return slices.Concat(secretPlaces, placeRules(s.cfg.SecretPaths.Add))
 }
 
 // ruleName names the rule pat of the given kind, for a message.
@@ -874,9 +891,15 @@ func ruleName(kind, pat string) string {
 // does.
 func (s *Server) localMatch(abs string, create bool) (why, kind string) {
 	keys := ruleKeys(localKey(abs))
+	except := s.cfg.SecretPaths.Except
 	for _, l := range s.localLists(create) {
 		for _, pat := range l.rules {
 			if !ruleMatches(pat, keys) {
+				continue
+			}
+			// An exception the config names lifts the secret-path rules
+			// here as it does on an agent; the other kinds stand.
+			if l.kind == secretKind && slices.ContainsFunc(except, func(e string) bool { return ruleMatches(e, keys) }) {
 				continue
 			}
 			if l.link != "" {
@@ -911,16 +934,24 @@ func (s *Server) localRule(local string, create bool) string {
 // a file must never be created in such as ~/.config/autostart, would have
 // every upload or download refused.
 func (s *Server) checkWorkspace(dir string) error {
-	why, kind := s.localMatch(filepath.Join(dir, "x"), true)
-	switch kind {
-	case "":
-		return nil
-	case secretKind:
-		return fmt.Errorf("every file in %s %s, as in a credential store, and the rule holds in the workspace too, so nothing in it could be uploaded; choose another directory", dir, why)
-	case ownKind:
-		return fmt.Errorf("every file in %s %s, which holds in the workspace too, so nothing in it could be uploaded or downloaded; choose another directory", dir, why)
+	probe := filepath.Join(dir, "x")
+	// Both directions: a file read to upload is matched against every
+	// secret-path rule, one a download creates against the places and the
+	// persistence points.
+	for _, create := range []bool{false, true} {
+		why, kind := s.localMatch(probe, create)
+		switch kind {
+		case "":
+			continue
+		case secretKind:
+			return fmt.Errorf("every file in %s %s, as in a credential store, and the rule holds in the workspace too, so nothing in it could be uploaded; choose another directory", dir, why)
+		case ownKind:
+			return fmt.Errorf("every file in %s %s, which holds in the workspace too, so nothing in it could be uploaded or downloaded; choose another directory", dir, why)
+		default:
+			return fmt.Errorf("every file in %s %s, and the rule holds in the workspace too, so no download could create a file in it; choose another directory", dir, why)
+		}
 	}
-	return fmt.Errorf("every file in %s %s, and the rule holds in the workspace too, so no download could create a file in it; choose another directory", dir, why)
+	return nil
 }
 
 // treeRules returns rules that match every path under each of dirs, absolute
