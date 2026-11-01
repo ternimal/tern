@@ -34,7 +34,7 @@ func TestLibraryLoadersAreWrappers(t *testing.T) {
 		if d, _ := cu.RunDecision([]string{name, "x"}, false); d != Deny {
 			t.Errorf("confirm_unlisted offers %s", name)
 		}
-		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{name, "-list", "*"}}}}}); err == nil {
+		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{name, "-list", "*"}}}}}, SecretPathsConfig{}); err == nil {
 			t.Errorf("a pattern with a slot names %s without allow_wrappers", name)
 		}
 	}
@@ -54,7 +54,7 @@ func TestLiteralWrapperPatterns(t *testing.T) {
 	literal := [][]string{{"openssl", "version"}, {"ssh-keygen", "-l", "-f", "/etc/ssh/ssh_host_ed25519_key.pub"},
 		{"nginx", "-t"}, {"keytool", "-list", "-keystore", "/etc/app/trust.jks", "-storepass:file", "/etc/app/pass"}}
 	pols, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: literal}},
-		"c": {Run: RunConfig{Allow: literal}, Confirm: []string{"run"}}, "u": {Run: RunConfig{Allow: literal, ConfirmUnlisted: true}}})
+		"c": {Run: RunConfig{Allow: literal}, Confirm: []string{"run"}}, "u": {Run: RunConfig{Allow: literal, ConfirmUnlisted: true}}}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,12 +76,12 @@ func TestLiteralWrapperPatterns(t *testing.T) {
 	}
 	for _, pat := range [][]string{{"openssl", "x509", "-in", "*"}, {"keytool", "-list", "-keystore", "*"}, {"nginx", "**"},
 		{"redis-server", "/etc/redis/redis.conf", "**"}} {
-		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{pat}}}}); err == nil ||
+		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{pat}}}}, SecretPathsConfig{}); err == nil ||
 			!strings.Contains(err.Error(), "allow_wrappers") || !strings.Contains(err.Error(), "argument the model chooses") {
 			t.Errorf("pattern %q: %v", pat, err)
 		}
 	}
-	if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{AllowWrappers: true, Allow: [][]string{{"openssl", "x509", "-in", "*"}}}}}); err != nil {
+	if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{AllowWrappers: true, Allow: [][]string{{"openssl", "x509", "-in", "*"}}}}}, SecretPathsConfig{}); err != nil {
 		t.Errorf("allow_wrappers with a slot: %v", err)
 	}
 }
@@ -91,7 +91,7 @@ func TestLiteralWrapperPatterns(t *testing.T) {
 // run.allow_wrappers, and for any other program, input goes through.
 func TestLiteralWrapperTakesNoStdin(t *testing.T) {
 	pols, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{"sh"}, {"cat"}}}},
-		"w": {Run: RunConfig{Allow: [][]string{{"sh"}}, AllowWrappers: true}}})
+		"w": {Run: RunConfig{Allow: [][]string{{"sh"}}, AllowWrappers: true}}}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestLiteralWrapperTakesNoStdin(t *testing.T) {
 // A command a human is asked to approve is named in the reason with its
 // secrets redacted, as the reason is written to the audit log.
 func TestConfirmReasonRedacted(t *testing.T) {
-	pols, err := BuildPolicies(map[string]ProfileConfig{"u": {Run: RunConfig{ConfirmUnlisted: true}}})
+	pols, err := BuildPolicies(map[string]ProfileConfig{"u": {Run: RunConfig{ConfirmUnlisted: true}}}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

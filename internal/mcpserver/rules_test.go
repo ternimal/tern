@@ -143,7 +143,7 @@ func TestWrapperSpellings(t *testing.T) {
 		if d, why := cu.RunDecision([]string{name, "x"}, false); d != Deny {
 			t.Errorf("confirm_unlisted decision for %q = %v (%s), want a refusal", name, d, why)
 		}
-		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{name, "**"}}}}}); err == nil {
+		if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{name, "**"}}}}}, SecretPathsConfig{}); err == nil {
 			t.Errorf("pattern %q ** accepted without allow_wrappers", name)
 		}
 	}
@@ -173,7 +173,7 @@ func TestCommandNamePathForms(t *testing.T) {
 				t.Errorf("%q with allow_wrappers=%v: decision %v (%s)", name, p.allowWrappers, d, why)
 			}
 		}
-		_, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{AllowWrappers: true, Allow: [][]string{{name, "**"}}}}})
+		_, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{AllowWrappers: true, Allow: [][]string{{name, "**"}}}}}, SecretPathsConfig{})
 		if err == nil || !strings.Contains(err.Error(), "bare name") {
 			t.Errorf("pattern %q: %v", name, err)
 		}
@@ -447,7 +447,7 @@ func TestConfirmPairs(t *testing.T) {
 	pols, err := BuildPolicies(map[string]ProfileConfig{
 		"ops":   {Run: RunConfig{Shell: true}, PTY: true, WritePaths: []string{"/srv/app/**"}, Confirm: []string{"run:shell", "write_file"}},
 		"child": {Extends: "ops"},
-	})
+	}, SecretPathsConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +600,7 @@ func TestWrapperAliases(t *testing.T) {
 			t.Errorf("wrapper %s not refused (decision %d)", a0, d)
 		}
 	}
-	if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{"bash.exe", "**"}}}}}); err == nil {
+	if _, err := BuildPolicies(map[string]ProfileConfig{"p": {Run: RunConfig{Allow: [][]string{{"bash.exe", "**"}}}}}, SecretPathsConfig{}); err == nil {
 		t.Errorf("pattern bash.exe ** accepted without allow_wrappers")
 	}
 }

@@ -28,6 +28,9 @@ type mcpConfig struct {
 	AuditLog      string                             `json:"audit_log"`
 	RecordDir     string                             `json:"record_dir"`
 	PersistPTYs   bool                               `json:"persist_ptys"`
+	// SecretPaths changes the paths no profile may read or write, for every
+	// target; a profile's own secret_paths adds to it.
+	SecretPaths mcpserver.SecretPathsConfig `json:"secret_paths,omitzero"`
 	// ConfirmWait is how long a call waits for the client to answer an
 	// approval form asked inside it, such as "30s"; empty means the
 	// default. A client that answers by itself or never shows the form

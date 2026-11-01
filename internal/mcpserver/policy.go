@@ -34,6 +34,8 @@ type Policy struct {
 	allowPTY        bool
 	confirm         map[string]bool // actions that need a human's approval
 	confirmUnlisted bool            // unlisted commands ask instead of failing
+	secretAdd       []string        // paths the configuration adds to the secret-path rules
+	secretExcept    []string        // paths the configuration lifts those rules for
 	timeoutCap      time.Duration   // 0: the server's cap
 	outputCap       int             // 0: the server's cap
 	ptyMax          int             // 0: defaultPTYsPerTarget
@@ -89,11 +91,52 @@ type ProfileConfig struct {
 	// and download read them, so naming one of a pair confirms both.
 	Confirm []string `json:"confirm,omitempty"`
 	Limits  Limits   `json:"limits,omitzero"`
+	// SecretPaths changes the secret-path rules for the targets that use
+	// this profile, on top of any the config file sets server-wide.
+	SecretPaths SecretPathsConfig `json:"secret_paths,omitzero"`
 	// PTY lets the model open interactive terminals (the pty_* tools). A
 	// terminal runs whatever is typed into it, so this needs run.shell, and
 	// where shell commands need approval (run or run:shell in confirm), so
 	// does everything typed into a terminal.
 	PTY bool `json:"pty,omitempty"`
+}
+
+// SecretPathsConfig changes the paths no profile may read or write. Add names
+// more of them, for a credential store this list does not know, such as a
+// vault directory of your own. Except lifts the secret-path rules for the
+// paths it names, built-in rules included: those paths are then read and
+// written like any other, so name the files or directories you mean and never
+// a tree you have not looked at. Both are matched as every other path rule
+// is, without regard to case, and a pattern matching every path is refused.
+// An exception does not widen a profile: a path still has to be one the
+// profile may read or write, and the persistence-point rules still hold.
+// agent_info reports both, so the model is told what really holds.
+type SecretPathsConfig struct {
+	Add    []string `json:"add,omitempty"`
+	Except []string `json:"except,omitempty"`
+}
+
+// catchAllRules match every path, so an exception may not be one of them: it
+// would lift the secret-path rules for the whole file system.
+var catchAllRules = []string{"**", "**/*", "/**", "/**/*", "**/**", "*"}
+
+// validate checks the patterns of a SecretPathsConfig, in the config file's
+// terms, where field is "secret_paths" or "profiles.<name>.secret_paths".
+func (c SecretPathsConfig) validate(field string) error {
+	for _, list := range []struct {
+		name string
+		pats []string
+	}{{"add", c.Add}, {"except", c.Except}} {
+		for _, pat := range list.pats {
+			if err := checkPathPattern(pat); err != nil {
+				return fmt.Errorf("%s.%s: %w", field, list.name, err)
+			}
+			if list.name == "except" && slices.Contains(catchAllRules, pat) {
+				return fmt.Errorf("%s.except: %q matches every path, which would lift every secret-path rule; name the paths you mean", field, pat)
+			}
+		}
+	}
+	return nil
 }
 
 // RunConfig adds to what run may execute.
@@ -128,12 +171,19 @@ type Limits struct {
 }
 
 // BuildPolicies resolves user profiles, following extends chains, on top of
-// the built-in readonly profile.
-func BuildPolicies(user map[string]ProfileConfig) (map[string]*Policy, error) {
+// the built-in readonly profile. base holds the config file's server-wide
+// secret-path changes, which every profile starts from and a profile's own
+// secret_paths adds to.
+func BuildPolicies(user map[string]ProfileConfig, base SecretPathsConfig) (map[string]*Policy, error) {
 	if _, ok := user["readonly"]; ok {
 		return nil, fmt.Errorf(`profile "readonly" is built in and cannot be redefined`)
 	}
-	out := map[string]*Policy{"readonly": readonlyPolicy()}
+	if err := base.validate("secret_paths"); err != nil {
+		return nil, err
+	}
+	root := readonlyPolicy()
+	root.secretAdd, root.secretExcept = slices.Clone(base.Add), slices.Clone(base.Except)
+	out := map[string]*Policy{"readonly": root}
 	var build func(name string, chain []string) (*Policy, error)
 	build = func(name string, chain []string) (*Policy, error) {
 		if p, ok := out[name]; ok {
@@ -167,6 +217,8 @@ func BuildPolicies(user map[string]ProfileConfig) (map[string]*Policy, error) {
 			userRun:         parent.userRun || len(cfg.Run.Allow) > 0 || cfg.Run.ConfirmUnlisted,
 			confirm:         maps.Clone(parent.confirm),
 			confirmUnlisted: parent.confirmUnlisted || cfg.Run.ConfirmUnlisted,
+			secretAdd:       slices.Concat(parent.secretAdd, cfg.SecretPaths.Add),
+			secretExcept:    slices.Concat(parent.secretExcept, cfg.SecretPaths.Except),
 			timeoutCap:      parent.timeoutCap,
 			outputCap:       parent.outputCap,
 			ptyMax:          parent.ptyMax,
@@ -187,6 +239,9 @@ func BuildPolicies(user map[string]ProfileConfig) (map[string]*Policy, error) {
 		}
 		if err := cfg.validate(p.allowWrappers); err != nil {
 			return nil, fmt.Errorf("profile %q: %w", name, err)
+		}
+		if err := cfg.SecretPaths.validate("profiles." + name + ".secret_paths"); err != nil {
+			return nil, err
 		}
 		if p.allowPTY && !p.allowShell {
 			return nil, fmt.Errorf("profile %q: pty needs run.shell, since a terminal runs any command typed into it", name)
@@ -240,11 +295,8 @@ func (c ProfileConfig) validate(allowWrappers bool) error {
 	}
 	for _, list := range [][]string{c.ReadPaths, c.WritePaths} {
 		for _, p := range list {
-			if !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "**") {
-				return fmt.Errorf("path pattern %q must be absolute (/..., /c:/...) or start with **", p)
-			}
-			if strings.ContainsRune(p, 0) || slices.Contains(strings.Split(p, "/"), "..") {
-				return fmt.Errorf("path pattern %q must not contain a NUL byte or a .. segment", p)
+			if err := checkPathPattern(p); err != nil {
+				return err
 			}
 		}
 	}
@@ -259,6 +311,17 @@ func (c ProfileConfig) validate(allowWrappers bool) error {
 	}
 	if c.Limits.TerminalIdleS != 0 && (c.Limits.TerminalIdleS < 60 || c.Limits.TerminalIdleS > 86400) {
 		return fmt.Errorf("limits.terminal_idle_s must be 0 or between 60 and 86400")
+	}
+	return nil
+}
+
+// checkPathPattern vets a path pattern from the config file.
+func checkPathPattern(p string) error {
+	if !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "**") {
+		return fmt.Errorf("path pattern %q must be absolute (/..., /c:/...) or start with **", p)
+	}
+	if strings.ContainsRune(p, 0) || slices.Contains(strings.Split(p, "/"), "..") {
+		return fmt.Errorf("path pattern %q must not contain a NUL byte or a .. segment", p)
 	}
 	return nil
 }
@@ -593,7 +656,22 @@ var worldReadableRead = []string{"/etc/**"}
 // or a spelling such a file system opens as a protected name, is still
 // caught. Places where a file runs code or grants access later are in
 // noWritePaths.
-var secretPaths = []string{
+var secretPaths = slices.Concat(secretPathList, secretStemRules(), agentConfigFiles)
+
+// agentConfigFiles are the files an AI client loads by name: its list of MCP
+// servers and the settings beside it. They are secret paths, since they hold
+// tokens, and persistence points as well: a file planted under one of these
+// names is read as configuration the next time someone opens that directory,
+// so a download never creates one, whatever the rest of its path is. The
+// directories these clients keep, and the instruction files they read, are in
+// secretPathList and noWritePathList.
+var agentConfigFiles = []string{
+	"**/.claude.json*", "**/claude_desktop_config.json", "**/mcp.json", "**/.mcp.json",
+	"**/mcp_config.json", "**/mcp-config.json", "**/cline_mcp_settings.json",
+	"**/opencode.json", "**/opencode.jsonc", "**/crush.json", "**/.crush.json",
+}
+
+var secretPathList = []string{
 	// The password hashes, under the names their backups get too (shadow-,
 	// gshadow-, shadow.bak, Debian's daily /var/backups/shadow.bak).
 	"/etc/shadow", "/etc/*shadow*", "/var/backups/*shadow*",
@@ -602,7 +680,6 @@ var secretPaths = []string{
 	"**/.ssh/**", "**/.gnupg/**", "**/.aws/**", "**/.azure/**", "**/.config/gcloud/**", "**/.kube/**",
 	"**/.docker/config.json", "**/.netrc", "**/.git-credentials", "**/.pgpass", "**/.env", "**/.env.*",
 	"**/*.key", "**/*.pem", "**/*.p12", "**/*.pfx", "**/*.jks", "**/*.keystore", "**/*.kdbx",
-	"**/*secret*", "**/*credential*", "**/*token*",
 	"/proc/*/environ", "/proc/*/cmdline", "/proc/*/mem", "/proc/*/maps", "/proc/kcore",
 	// Links back into the whole file system or another process: /proc/1/root/etc/shadow.
 	"/proc/*/root/**", "/proc/*/cwd/**", "/proc/*/fd/**", "/proc/*/task/**", "/proc/*/map_files/**",
@@ -629,9 +706,7 @@ var secretPaths = []string{
 	"/*:/windows/system32/microsoft/protect/**", "/*:/programdata/microsoft/vault/**",
 	"/*:/programdata/microsoft/wlansvc/profiles/**", "**/ntuser.dat*", "**/usrclass.dat*",
 	"/*:/windows/memory.dmp", "/*:/windows/minidump/**", "/*:/windows/system32/inetsrv/config/**",
-	// A directory named for secrets holds them under any file name:
-	// Kubernetes secret volumes, Docker's /run/secrets, systemd credentials.
-	"**/*secret*/**", "**/*credential*/**", "**/*token*/**", "**/.dockerconfigjson",
+	"**/.dockerconfigjson",
 	// Service credentials kept under /etc: directory, LDAP bind and Kerberos
 	// master keys, Samba, Redis and Wi-Fi passwords, VPN and web logins, mail
 	// relays, SNMP communities, NTP keys, and BSD and macOS password stores.
@@ -698,8 +773,7 @@ var secretPaths = []string{
 	// Anthropic API's profiles, and Codex's and Gemini CLI's directories.
 	// They also run code (see noWritePaths), which this keeps them from
 	// being written too.
-	"**/.claude/**", "**/.claude.json*", "**/claude_desktop_config.json", "**/mcp.json", "**/.mcp.json",
-	"**/mcp_config.json", "**/mcp-config.json", "**/cline_mcp_settings.json", "**/.config/anthropic/**",
+	"**/.claude/**", "**/.config/anthropic/**",
 	"**/appdata/roaming/anthropic/**", "**/.codex/**", "**/.gemini/**",
 	// The settings that hold Zed's, Continue's, OpenCode's and Goose's MCP
 	// server lists, with the environment each server gets: Zed's
@@ -708,12 +782,74 @@ var secretPaths = []string{
 	// is and its configuration directory, and Goose's (%APPDATA%\Block\goose
 	// on Windows).
 	"**/.zed/settings.json", "**/.config/zed/settings.json", "**/appdata/roaming/zed/settings.json", "**/.continue/**",
-	"**/opencode.json", "**/opencode.jsonc", "**/.config/opencode/**", "**/.config/goose/**",
+	"**/.config/opencode/**", "**/.config/goose/**",
 	"**/appdata/roaming/block/goose/**",
 	// Crush's crush.json (in a project, ~/.config/crush, %LOCALAPPDATA%\crush)
 	// and Qwen Code's .qwen directories, which hold MCP server lists too.
-	"**/crush.json", "**/.crush.json", "**/.config/crush/**", "**/appdata/local/crush/**", "**/.qwen/**",
+	"**/.config/crush/**", "**/appdata/local/crush/**", "**/.qwen/**",
 }
+
+// secretStems are the words that name a file or directory for what it holds.
+// A stem counts as the name, as a dotfile, with an extension, or at either
+// end of a name next to a "." "_" or "-", never as a word inside a longer
+// one: credentials.json, client_secret.json, token-cache.json and a
+// secrets/ directory are caught, while tokenizer.py,
+// host-credential-sweep.txt and a secretary/ directory are not. The older
+// rules matched the word anywhere in a name, which refused far more files
+// than it protected.
+var secretStems = []string{"secret", "secrets", "credential", "credentials", "token", "tokens"}
+
+// secretStemRules returns the secret-path rules for secretStems: the file
+// names, and the directories that hold such files under any name, such as a
+// Kubernetes secret volume, Docker's /run/secrets or systemd credentials.
+func secretStemRules() []string {
+	names := []string{"%s", ".%s", "%s.*", "%s_*", "%s-*", "*.%s", "*_%s", "*-%s", "*_%s.*", "*-%s.*"}
+	out := make([]string, 0, len(secretStems)*len(names)*2)
+	for _, w := range secretStems {
+		for _, shape := range names {
+			name := "**/" + fmt.Sprintf(shape, w)
+			// The same shapes name a directory whose files are secret
+			// whatever they are called: a Kubernetes secret volume, which
+			// the documented example mounts at /etc/secret-volume,
+			// Docker's /run/secrets and systemd's credentials. The rule
+			// ends in /**/* so that it matches what is inside and not the
+			// directory's own name, which the name rule beside it covers:
+			// "**/x/**" would match x itself, since ** matches no segment
+			// at all, and a name rule is lifted where a place rule is not.
+			out = append(out, name, name+"/**/*")
+		}
+	}
+	return out
+}
+
+// isNameRule reports whether pat matches a file by its name alone, wherever
+// it sits: "**/" and one segment, such as "**/*.pem" or "**/credentials".
+// A rule that names a place, such as "**/.ssh/**" or "/etc/shadow", is not
+// one.
+func isNameRule(pat string) bool {
+	rest, ok := strings.CutPrefix(pat, "**/")
+	return ok && !strings.Contains(rest, "/")
+}
+
+// placeRules returns the rules of list that name a place (see isNameRule).
+func placeRules(list []string) []string {
+	out := make([]string, 0, len(list))
+	for _, pat := range list {
+		if !isNameRule(pat) {
+			out = append(out, pat)
+		}
+	}
+	return out
+}
+
+// secretPlaces are the secret-path rules that name a place. Only these hold
+// for a file a download creates in the workspace: a name says what a file is
+// called, not what it holds, so refusing to create a file called
+// host-credential-sweep.txt in a workspace of its own protects nothing, while
+// refusing to create one in ~/.ssh, or where a link in the workspace leads
+// into a credential store, still does. Reading a local file to upload, and
+// every path on an agent, are matched against the whole of secretPaths.
+var secretPlaces = placeRules(secretPaths)
 
 // noWritePaths are never writable, whatever a profile allows, though they
 // stay readable where a profile lets the model read: the places where a file
@@ -721,7 +857,9 @@ var secretPaths = []string{
 // a common command runs (persistence points). They match as secretPaths do.
 // The list is best effort: it names the common places on Linux, macOS and
 // Windows, not every one, so keep write_paths narrow.
-var noWritePaths = []string{
+var noWritePaths = slices.Concat(noWritePathList, agentConfigFiles)
+
+var noWritePathList = []string{
 	// Accounts, sign-in and privilege.
 	"/etc/passwd", "/etc/group", "/etc/pam.conf", "/etc/pam.d/**", "/etc/security/**", "/etc/sudo.conf",
 	"/etc/doas.conf", "/usr/local/etc/doas.conf", "/etc/polkit-1/**", "/etc/ssh/**", "**/*authorized_keys*",
@@ -999,7 +1137,7 @@ func (p *Policy) CheckRead(raw string) (string, bool, string) {
 	if why != "" {
 		return raw, false, why
 	}
-	if pat := matchSecret(key); pat != "" {
+	if pat := p.matchSecret(key); pat != "" {
 		return agentPath, false, fmt.Sprintf("%s matches the secret-path rule %q and is never readable", agentPath, pat)
 	}
 	if matchAny(p.readAllow, key) {
@@ -1023,7 +1161,7 @@ func (p *Policy) CheckReal(real string) error {
 	if why != "" {
 		return fmt.Errorf("the agent resolved the path to %s, which is refused: %s", quote(real), why)
 	}
-	if pat := matchSecret(key); pat != "" {
+	if pat := p.matchSecret(key); pat != "" {
 		return fmt.Errorf("denied: the path leads through a link to %s, which matches the secret-path rule %q", show(agentPath), pat)
 	}
 	return nil
@@ -1093,7 +1231,7 @@ func (p *Policy) CheckWrite(raw string) (string, bool, string) {
 	if why != "" {
 		return raw, false, why
 	}
-	if pat := matchSecret(key); pat != "" {
+	if pat := p.matchSecret(key); pat != "" {
 		return agentPath, false, fmt.Sprintf("%s matches the secret-path rule %q and is never writable", agentPath, pat)
 	}
 	if pat := matchRule(noWritePaths, key); pat != "" {
@@ -1231,6 +1369,33 @@ func isWindowsKey(key string) bool { return len(key) >= 3 && key[0] == '/' && ke
 
 // matchSecret returns the secret-path rule key matches.
 func matchSecret(key string) string { return matchRule(secretPaths, key) }
+
+// NeverReadable returns the secret-path rules that hold for this profile, the
+// config file's own additions included, for agent_info.
+func (p *Policy) NeverReadable() []string { return slices.Concat(secretPaths, p.secretAdd) }
+
+// SecretExceptions returns the paths the config file lifts those rules for,
+// for agent_info: the model is told what no longer holds.
+func (p *Policy) SecretExceptions() []string { return slices.Clone(p.secretExcept) }
+
+// matchSecret returns the secret-path rule key matches under this profile, or
+// "". The profile's own additions count as such rules, and a path its
+// exceptions name matches none of them, built in or added (see
+// SecretPathsConfig). Only the secret-path rules are lifted: a path still has
+// to be one the profile may read or write, and the persistence-point rules
+// still hold.
+func (p *Policy) matchSecret(key string) string {
+	if p == nil {
+		return matchSecret(key)
+	}
+	if matchAny(p.secretExcept, key) {
+		return ""
+	}
+	if pat := matchSecret(key); pat != "" {
+		return pat
+	}
+	return matchRule(p.secretAdd, key)
+}
 
 // matchRule returns the rule in rules that key matches, ignoring case, also
 // once folded (see fold). A slash path is also matched as if on a drive,

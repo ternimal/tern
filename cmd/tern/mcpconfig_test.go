@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ternimal/tern/internal/mcpserver"
 	tern "github.com/ternimal/tern/internal/tern"
 )
 
@@ -148,5 +149,54 @@ func TestConfigConfirmWait(t *testing.T) {
 	}
 	if _, err := loadMCPConfig(cfg); err == nil {
 		t.Error("an unknown field must stop tern mcp")
+	}
+}
+
+// secret_paths is read from the config file, server-wide and per profile, and
+// a pattern that would lift every rule stops tern mcp at startup.
+func TestConfigSecretPaths(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "mcp.json")
+	targets := `"targets": {"web1": {"addr": "10.0.0.5:2222", "fingerprint": "` + strings.Repeat("ab", 32) + `", "token_env": "TERN_TOKEN", "profile": "ops"}}`
+	write := func(secret string) *mcpConfig {
+		t.Helper()
+		body := "{" + targets + `, "profiles": {"ops": {"read_paths": ["/srv/**"]` + secret + "}}}"
+		if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := loadMCPConfig(cfg)
+		if err != nil {
+			t.Fatalf("%s: %v", body, err)
+		}
+		return c
+	}
+
+	c := write(`, "secret_paths": {"add": ["/srv/vault/**"], "except": ["/srv/sweeps/**"]}`)
+	pols, err := mcpserver.BuildPolicies(c.Profiles, c.SecretPaths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, why := pols["ops"].CheckRead("/srv/vault/db"); ok {
+		t.Errorf("an added secret path was readable: %q", why)
+	}
+	if _, ok, why := pols["ops"].CheckRead("/srv/sweeps/credentials.json"); !ok {
+		t.Errorf("an excepted path was refused: %q", why)
+	}
+
+	// Server-wide, where it holds for the workspace too.
+	if err := os.WriteFile(cfg, []byte("{"+targets+`, "profiles": {"ops": {}}, "secret_paths": {"except": ["/srv/sweeps/**"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err = loadMCPConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.SecretPaths.Except) != 1 {
+		t.Errorf("server-wide secret_paths = %+v", c.SecretPaths)
+	}
+
+	c = write(`, "secret_paths": {"except": ["**"]}`)
+	if _, err := mcpserver.BuildPolicies(c.Profiles, c.SecretPaths); err == nil || !strings.Contains(err.Error(), "matches every path") {
+		t.Errorf("a catch-all exception: %v", err)
 	}
 }
