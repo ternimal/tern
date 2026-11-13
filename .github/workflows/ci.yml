@@ -30,7 +30,7 @@ jobs:
           # Exact toolchain: the release binaries reproduce bit-for-bit only with
           # the version that built them. Bump deliberately, together with the
           # release workflow and the staticcheck pin in the Makefile.
-          go-version: '1.26.10'
+          go-version: '1.26.11'
       - name: lint (gofmt, vet, staticcheck)
         run: make lint
       - run: go test -race -count=1 ./...
@@ -57,7 +57,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
       - run: go vet ./...
       - run: go build ./...
       - name: Windows unit tests (internal/tern; ConPTY tests skip here, the runner has no console)

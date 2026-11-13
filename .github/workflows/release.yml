@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # Exact toolchain so a user can rebuild the tag and get the same bytes.
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           # Nothing restored from a cache in the job that holds write tokens.
           cache: false
       - name: check the tag

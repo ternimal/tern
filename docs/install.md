@@ -30,7 +30,7 @@ different releases are not promised to work with each other.
 
 ## With `go install`
 
-Build them with Go 1.21 or later. When yours is older than Go 1.26.10, the
+Build them with Go 1.21 or later. When yours is older than Go 1.26.11, the
 release toolchain, it fetches a Go 1.26 release at least that new on its own
 (unless `GOTOOLCHAIN=local`):
 
@@ -44,7 +44,7 @@ static.
 
 ## Build from source
 
-Requires **Go 1.26.10+** (an older Go 1.21+ fetches it on its own).
+Requires **Go 1.26.11+** (an older Go 1.21+ fetches it on its own).
 
 ```bash
 make build            # native bin/tern, bin/ternd, bin/ternr, bin/rtern

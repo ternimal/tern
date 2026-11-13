@@ -1,6 +1,6 @@
 module github.com/ternimal/tern
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/aymanbagabas/go-pty v0.2.3

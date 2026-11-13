@@ -32,7 +32,7 @@ reply says how to sign the CLA.
 
 ## Development
 
-- Go 1.26.10 or later; CI and the release use exactly 1.26.10, and the
+- Go 1.26.11 or later; CI and the release use exactly 1.26.11, and the
   staticcheck that `make lint` pins may not build with a newer Go. Every
   target builds as pure Go (`CGO_ENABLED=0`) except android/amd64; the
   binaries need nothing beyond the OS.
