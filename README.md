@@ -94,6 +94,14 @@ you through writing one. [plugin/README.md](plugin/README.md) says what it
 runs and what it sends. Other clients, a one-line setup without a config
 file, the tools and the safety model are in [docs/mcp.md](docs/mcp.md).
 
+### Human in the loop
+
+The model proposes, you decide. Actions you list under a host's `confirm`
+stop and show you the exact command or file in a form before they run. An
+approval covers that one action, is used once and expires after five
+minutes. If the client cannot show the form, the action is refused.
+See [Confirmation](docs/mcp.md#confirmation).
+
 ## Features
 
 - **Direct or relay**: reach an agent on your LAN directly, or reach one behind
