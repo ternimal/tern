@@ -13,6 +13,7 @@
   "keywords": ["remote", "terminal", "ssh", "mcp", "ops", "sysadmin"],
   "documentationUrl": "https://github.com/ternimal/tern/blob/main/docs/mcp.md",
   "supportUrl": "https://github.com/ternimal/tern/issues",
+  "privacyPolicyUrl": "https://github.com/ternimal/tern/blob/main/plugin/README.md#privacy",
   "userConfig": {
     "config": {
       "type": "string",
