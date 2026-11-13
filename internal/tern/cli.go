@@ -119,18 +119,23 @@ func ValidSessionName(name string) error {
 	return nil
 }
 
+// Contact is the project's email address for anything that is not a bug
+// report or a security issue.
+const Contact = "contact@ternimal.org"
+
 // Banner renders the tern logo as a boxed, plain-ASCII startup banner, so it
-// shows the same on any Windows console. version, when non-empty, is placed on
-// the last line; the frame grows to fit.
+// shows the same on any Windows console. The last line holds version, when
+// non-empty, and Contact; the frame grows to fit.
 func Banner(version string) string {
+	last := Contact
+	if version != "" {
+		last = version + "  " + Contact
+	}
 	lines := []string{
 		` \\\_\`,
 		` \\\( ^>     t e r n`,
 		`  \\\=/      A minimal, portable, secure remote terminal with MCP`,
-		"  ~~~~~",
-	}
-	if version != "" {
-		lines[3] = "  ~~~~~      " + version
+		"  ~~~~~      " + last,
 	}
 	w := 0
 	for _, l := range lines {

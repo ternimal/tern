@@ -5,7 +5,7 @@
 | \\\_\                                                            |
 | \\\( ^>     t e r n                                              |
 |  \\\=/      A minimal, portable, secure remote terminal with MCP |
-|  ~~~~~                                                           |
+|  ~~~~~      contact@ternimal.org                                 |
 +------------------------------------------------------------------+
 ```
 
