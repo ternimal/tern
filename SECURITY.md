@@ -10,6 +10,8 @@ advisory. Include a description, affected version/commit, and a reproduction
 if possible. We aim to acknowledge within a few days and to coordinate a fix
 and disclosure.
 
+If you cannot use GitHub, email security@ternimal.org instead.
+
 ## Supported versions
 
 Only the latest release and `main` receive security fixes.

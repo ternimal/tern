@@ -93,6 +93,7 @@ The plugin and `tern mcp` have no telemetry.
 ## Support
 
 Questions and bugs: [GitHub issues](https://github.com/ternimal/tern/issues).
+Anything else, or if you cannot use GitHub: contact@ternimal.org.
 Report a security issue privately, not in an issue, through the repository's
 [private vulnerability reporting](https://github.com/ternimal/tern/security/advisories/new);
 [SECURITY.md](https://github.com/ternimal/tern/blob/main/SECURITY.md) says
