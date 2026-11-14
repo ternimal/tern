@@ -1,0 +1,17 @@
+{
+  "name": "ternimal",
+  "displayName": "Ternimal",
+  "version": "1.1.2",
+  "description": "Skills for working on your own hosts through tern mcp: setting it up, and operating hosts under policy-bound commands, file transfers, background jobs and terminals with approval prompts, redaction and an audit log.",
+  "author": {
+    "name": "Ternimal",
+    "url": "https://github.com/ternimal"
+  },
+  "homepage": "https://github.com/ternimal/tern",
+  "repository": "https://github.com/ternimal/tern",
+  "license": "AGPL-3.0-only",
+  "keywords": ["remote", "terminal", "ssh", "mcp", "ops", "sysadmin"],
+  "documentationUrl": "https://github.com/ternimal/tern/blob/main/docs/mcp.md",
+  "supportUrl": "https://github.com/ternimal/tern/issues",
+  "privacyPolicyUrl": "https://github.com/ternimal/tern/blob/main/plugin-skills/README.md#privacy"
+}
