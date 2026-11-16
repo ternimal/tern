@@ -172,6 +172,47 @@ else the home directory (`%LocalAppData%` on Windows): without one they stop
 `tern mcp` at startup, and `--audit-log` or `audit_log` names another place
 for the log. Without a config file, `--profile` can only be `readonly`.
 
+### Reloading without a restart
+
+With `--config`, `tern mcp` watches the config file while it runs, so a host
+you add to it, or a target you change or remove, takes effect in the same
+session: the AI client sees the change the next time it calls `list_targets`,
+with no restart of the client or the server. It reads the file, with the
+checks it had at startup, within a second of a change to its size or
+modification time, and every ten seconds in any case, and reloads when the
+content has changed, so an edit that keeps both is seen too. On Unix, `SIGHUP` reloads
+at once even when the file is unchanged (`kill -HUP $(pgrep -f 'tern mcp')`),
+which picks up a token file that changed while the config did not.
+
+A reload refreshes the targets and their profiles. Token files are read again,
+but a key is loaded once per path for as long as `tern mcp` runs: to switch
+keys, point the target at the new key's file, or restart. A reload does not
+change the workspace, the audit log, or the files kept out of the workspace, so
+a login file a target points at for the first time is protected from the
+workspace tools only after a restart; keep keys and tokens under `~/.ssh` or
+another never-uploaded path and this does not arise. A file that cannot be
+read, parsed or built is skipped, leaving the running targets in place, and
+the reason is logged to stderr once, so a half-written file never takes a
+target offline.
+
+Terminals and jobs that are already open follow their target by name for as
+long as it reaches the same agent, so a profile tightened at reload holds for
+them at once. Once a reload removes the target, or points its name at another
+agent, nothing more is typed into its terminals: they can still be read,
+resized and closed, and its jobs read and cancelled, and closing a terminal
+ends its session on the agent it was opened on. Putting the target back as it
+was makes them usable again. A target whose connection is unchanged keeps the
+OS tern had already probed. With `persist_ptys`, the terminals move to the
+state file named for the new set of targets, where a `tern mcp` started later
+with the reloaded config finds them, unless another `tern mcp` holds that file.
+
+The list of tools is fixed when the server starts, and a reload does not change
+it. Tools are registered for every profile the config file defines, not only
+those a target already uses, so adding a target under an existing profile at
+reload finds its tools in place. A profile added to the file at reload that
+needs a tool class no earlier profile had (the first to write, or to open a
+terminal) needs a restart for that tool to appear.
+
 ## Profiles
 
 A profile starts from the one it `extends` (readonly by default) and only adds

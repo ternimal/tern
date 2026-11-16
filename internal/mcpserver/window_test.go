@@ -194,7 +194,7 @@ func TestReadsAfterDroppedOutput(t *testing.T) {
 	defer srv.Close()
 	cs := stackClient(t, srv, "", nil)
 	for i, c := range cases {
-		j := &job{id: fmt.Sprintf("job_dropped%d", i), target: "box", started: time.Now(), out: newRingBuffer(jobBuffer), done: true, ended: time.Now()}
+		j := &job{id: fmt.Sprintf("job_dropped%d", i), target: "box", tgt: srv.tgts().byName["box"], started: time.Now(), out: newRingBuffer(jobBuffer), done: true, ended: time.Now()}
 		j.out.Write(droppedStream(c.line, c.cut, jobBuffer))
 		j.out.Close()
 		srv.jobsMu.Lock()

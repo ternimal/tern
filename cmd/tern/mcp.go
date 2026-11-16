@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"maps"
 	"os"
@@ -79,6 +80,7 @@ func cmdMCP(args []string) {
 
 	cfg := mcpserver.Config{Version: version, MaxOutput: *maxOutput, MaxTimeout: *maxTimeout}
 	audit, persist, cfgFile, wsRelative := "", false, "", ""
+	var cfgSum [sha256.Size]byte  // the config file as tern mcp started with it
 	var confirmFile time.Duration // confirm_wait from the config file
 	// The files that hold a target's login or say which agent to trust:
 	// the workspace tools never send them anywhere, whatever their names.
@@ -88,43 +90,31 @@ func cmdMCP(args []string) {
 			log.Fatal("--config replaces the connection flags and --profile; use one or the other")
 		}
 		cfgFile = *configPath
-		c, err := loadMCPConfig(cfgFile)
+		data, err := tern.ReadConfigFile(cfgFile)
+		if err != nil {
+			log.Fatalf("config: %v", err)
+		}
+		cfgSum = sha256.Sum256(data) // what a reload compares the file with
+		c, err := parseMCPConfig(cfgFile, data)
 		if err != nil {
 			log.Fatalf("config: %v", err)
 		}
 		cfg.SecretPaths = c.SecretPaths
-		policies, err := mcpserver.BuildPolicies(c.Profiles, c.SecretPaths)
+		specs, policies, tlogins, err := buildMCPTargets(c)
 		if err != nil {
 			log.Fatalf("config: %v", err)
 		}
 		if confirmFile, err = c.confirmWait(); err != nil {
 			log.Fatalf("config: %v", err)
 		}
-		for _, name := range slices.Sorted(maps.Keys(c.Targets)) {
-			tc := c.Targets[name]
-			logins = append(logins, tc.ToFile, tc.TokenFile, tc.RelayTokenFile, tc.Key)
-			t, err := tc.build()
-			if err == nil {
-				err = checkFingerprints(t)
-			}
-			if err != nil {
-				log.Fatalf("config: target %s: %v", name, err)
-			}
-			prof := tc.Profile
-			if prof == "" {
-				prof = "readonly"
-			}
-			pol := policies[prof]
-			if pol == nil {
-				log.Fatalf("config: target %s: unknown profile %q", name, prof)
-			}
-			cfg.Targets = append(cfg.Targets, mcpserver.TargetSpec{
-				Target: t.info(name),
-				Policy: pol,
-				Dial:   func(ctx context.Context) (*tern.Client, error) { return t.dial(ctx, "") },
-			})
-		}
-		cfg.DefaultTarget, cfg.Workspace, audit = c.DefaultTarget, expandHome(c.Workspace), expandHome(c.AuditLog)
+		logins = append(logins, tlogins...)
+		cfg.Targets = specs
+		cfg.DefaultTarget = c.DefaultTarget
+		// Register tools for every profile the config defines, not only those a
+		// current target uses, so a target added at reload under an as-yet-unused
+		// profile still finds its tools in place.
+		cfg.RegisterPolicies = slices.Collect(maps.Values(policies))
+		cfg.Workspace, audit = expandHome(c.Workspace), expandHome(c.AuditLog)
 		cfg.RecordDir = expandHome(c.RecordDir)
 		persist, wsRelative = c.PersistPTYs, c.wsRelative
 	} else {
@@ -216,9 +206,157 @@ func cmdMCP(args []string) {
 	defer srv.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfgFile != "" {
+		watchMCPConfig(ctx, srv, cfgFile, cfgSum, persist)
+	}
 	if err := srv.RunStdio(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("mcp: %v", err)
 	}
+}
+
+// buildMCPTargets builds the target specs and the set of profile policies from
+// a loaded config. It reads each target's credentials, so it runs again on a
+// reload to pick up a new target or a rotated login. The returned logins name
+// the files a target authenticates with, for the caller to keep out of the
+// workspace.
+func buildMCPTargets(c *mcpConfig) (specs []mcpserver.TargetSpec, policies map[string]*mcpserver.Policy, logins []string, err error) {
+	policies, err = mcpserver.BuildPolicies(c.Profiles, c.SecretPaths)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.Targets)) {
+		tc := c.Targets[name]
+		logins = append(logins, tc.ToFile, tc.TokenFile, tc.RelayTokenFile, tc.Key)
+		t, berr := tc.build()
+		if berr == nil {
+			berr = checkFingerprints(t)
+		}
+		if berr != nil {
+			return nil, nil, nil, fmt.Errorf("target %s: %w", name, berr)
+		}
+		prof := tc.Profile
+		if prof == "" {
+			prof = "readonly"
+		}
+		pol := policies[prof]
+		if pol == nil {
+			return nil, nil, nil, fmt.Errorf("target %s: unknown profile %q", name, prof)
+		}
+		specs = append(specs, mcpserver.TargetSpec{
+			Target: t.info(name),
+			Policy: pol,
+			Dial:   func(ctx context.Context) (*tern.Client, error) { return t.dial(ctx, "") },
+		})
+	}
+	return specs, policies, logins, nil
+}
+
+// The config file's size and modification time are checked every
+// configPoll, and the file is read when they change and every configVerify
+// in any case, so an edit that keeps both is seen too. A change is read again
+// after configSettle, so a save that writes in several steps is read whole.
+// Tests shorten them.
+var (
+	configPoll   = time.Second
+	configVerify = 10 * time.Second
+	configSettle = 300 * time.Millisecond
+)
+
+// watchMCPConfig reloads the --config file into srv without a restart, so a
+// host added to or changed in the file becomes usable in the same session.
+// It reads the file, with the checks it had at startup, when its size or
+// modification time changes and every configVerify in any case, and reloads
+// when the content differs from what it last read. Reading opens the file,
+// which on Windows keeps an editor from replacing it for that moment, so it
+// is not read every configPoll. SIGHUP reloads at once even when the content
+// is the same, which picks up a token file that changed on its own. A reload
+// that fails to read, parse or build is skipped, leaving the running targets
+// in place, and logged once while the same error lasts. A reload refreshes
+// the targets and their profiles and, with persist, moves the terminal state
+// file to the name for the new targets. It does not change the workspace, the
+// audit log or the login files kept out of the workspace, so a login file a
+// reloaded target newly points at is protected from the workspace tools only
+// after a restart. sum is the hash of the config tern mcp started with.
+func watchMCPConfig(ctx context.Context, srv *mcpserver.Server, path string, sum [sha256.Size]byte, persist bool) {
+	lastErr := ""
+	skip := func(trigger string, err error) {
+		if msg := err.Error(); msg != lastErr {
+			lastErr = msg
+			log.Printf("mcp: config reload (%s) skipped: %v", trigger, err)
+		}
+	}
+	// read returns the file's content, or nil while it cannot be read; a
+	// file that is missing for a moment, as some editors save, is not news.
+	read := func(trigger string) []byte {
+		data, err := tern.ReadConfigFile(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return nil
+		case err != nil:
+			skip(trigger, err)
+			return nil
+		}
+		lastErr = ""
+		return data
+	}
+	reload := func(trigger string, force bool) {
+		data := read(trigger)
+		if data == nil || (!force && sha256.Sum256(data) == sum) {
+			return
+		}
+		if !force {
+			time.Sleep(configSettle)
+			if data = read(trigger); data == nil {
+				return
+			}
+		}
+		sum = sha256.Sum256(data) // a file that does not parse is read again only once it changes
+		c, err := parseMCPConfig(path, data)
+		if err != nil {
+			skip(trigger, err)
+			return
+		}
+		specs, _, _, err := buildMCPTargets(c)
+		if err != nil {
+			skip(trigger, fmt.Errorf("config: %w", err))
+			return
+		}
+		if err := srv.SetTargets(specs, c.DefaultTarget); err != nil {
+			skip(trigger, err)
+			return
+		}
+		if persist {
+			srv.MovePTYState(ptyStatePath(specs))
+		}
+		log.Printf("mcp: config reloaded (%s): %d targets", trigger, len(specs))
+	}
+
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		defer signal.Stop(hup)
+		tick := time.NewTicker(configPoll)
+		defer tick.Stop()
+		seen, _ := os.Stat(path) // the file as it looked when last read
+		verified := time.Now()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				reload("SIGHUP", true)
+			case <-tick.C:
+				fi, err := os.Stat(path)
+				if err == nil && seen != nil && fi.Size() == seen.Size() && fi.ModTime().Equal(seen.ModTime()) &&
+					time.Since(verified) < configVerify {
+					continue
+				}
+				reload("file change", false)
+				seen, _ = os.Stat(path)
+				verified = time.Now()
+			}
+		}
+	}()
 }
 
 // checkFingerprints catches a mistyped fingerprint at startup instead of on

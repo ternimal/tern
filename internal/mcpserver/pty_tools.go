@@ -372,7 +372,7 @@ func (s *Server) handlePTYSend(ctx context.Context, req *mcp.CallToolRequest, in
 	// cannot tell from a command, and even part of its hash would let anyone
 	// who reads the log test guesses at a weak one.
 	e := s.entry(req, "pty_send", "", map[string]any{"text_bytes": len(in.Text), "keys": in.Keys})
-	p, t, err := s.ptyFor(&e, in.PTYID)
+	p, t, stale, err := s.ptyFor(&e, in.PTYID)
 	if err != nil {
 		return nil, PTYSendOutput{}, err
 	}
@@ -403,6 +403,9 @@ func (s *Server) handlePTYSend(ctx context.Context, req *mcp.CallToolRequest, in
 	action := actionKey("pty_send", t.Name, map[string]any{"pty_id": p.id, "text": sha(in.Text), "keys": in.Keys})
 	if out, err, ok := replayCall[PTYSendOutput](ctx, s, e, in.IdempotencyKey, action); ok {
 		return nil, out, err
+	}
+	if stale != "" { // after the replay, which sends nothing new
+		return nil, PTYSendOutput{}, s.deny(e, stale)
 	}
 	d, why := t.Policy.PTYInputDecision()
 	v := confirmView{what: "type into terminal " + p.session, subject: typedSubject(in.Text, in.Keys)}
@@ -446,15 +449,18 @@ func typedSubject(text string, keys []string) string {
 
 // ptyFor finds the terminal a call names and its target, and marks it in use
 // until the caller calls p.release.
-func (s *Server) ptyFor(e *AuditEntry, id string) (*ptyState, *targetState, error) {
+func (s *Server) ptyFor(e *AuditEntry, id string) (p *ptyState, t *targetState, stale string, err error) {
 	e.PTYID = id
-	p := s.lookupPTY(id)
+	p = s.lookupPTY(id)
 	if p == nil {
-		return nil, nil, s.deny(*e, "unknown or closed pty_id; pty_list shows the open terminals")
+		return nil, nil, "", s.deny(*e, "unknown or closed pty_id; pty_list shows the open terminals")
 	}
 	e.Target = p.target
 	p.acquire()
-	return p, s.targets[p.target], nil
+	// stale, when set, says why a reload has left the terminal not to be
+	// typed into any more: the tools that send it input refuse with it.
+	t, stale = s.liveTarget(p.tgt)
+	return p, t, stale, nil
 }
 
 // PTYReadInput is pty_read's input.
@@ -489,7 +495,7 @@ type PTYReadOutput struct {
 func (s *Server) handlePTYRead(ctx context.Context, req *mcp.CallToolRequest, in PTYReadInput) (*mcp.CallToolResult, PTYReadOutput, error) {
 	markAudited(ctx)
 	e := s.entry(req, "pty_read", "", map[string]any{"since": in.Since, "wait_ms": in.WaitMS, "prompt": in.Prompt, "idle_ms": in.IdleMS, "until": in.Until, "format": in.Format})
-	p, t, err := s.ptyFor(&e, in.PTYID)
+	p, t, _, err := s.ptyFor(&e, in.PTYID)
 	if err != nil {
 		return nil, PTYReadOutput{}, err
 	}
@@ -595,7 +601,7 @@ func (s *Server) handlePTYRun(ctx context.Context, req *mcp.CallToolRequest, in 
 	markAudited(ctx)
 	shown, _ := redact(in.Command)
 	e := s.entry(req, "pty_run", "", map[string]any{"command": shown, "idle_ms": in.IdleMS, "until": in.Until, "timeout_s": in.TimeoutS})
-	p, t, err := s.ptyFor(&e, in.PTYID)
+	p, t, stale, err := s.ptyFor(&e, in.PTYID)
 	if err != nil {
 		return nil, PTYRunOutput{}, err
 	}
@@ -623,6 +629,9 @@ func (s *Server) handlePTYRun(ctx context.Context, req *mcp.CallToolRequest, in 
 	action := actionKey("pty_run", t.Name, map[string]any{"pty_id": p.id, "command": in.Command, "idle_ms": in.IdleMS, "until": in.Until, "timeout_s": int(o.wait / time.Second)})
 	if out, err, ok := replayCall[PTYRunOutput](ctx, s, e, in.IdempotencyKey, action); ok {
 		return nil, out, err
+	}
+	if stale != "" { // after the replay, which sends nothing new
+		return nil, PTYRunOutput{}, s.deny(e, stale)
 	}
 	d, why := t.Policy.PTYInputDecision()
 	v := confirmView{what: "run a command in terminal " + p.session, subject: show(in.Command)}
@@ -789,7 +798,7 @@ type PTYResizeOutput struct {
 func (s *Server) handlePTYResize(ctx context.Context, req *mcp.CallToolRequest, in PTYResizeInput) (*mcp.CallToolResult, PTYResizeOutput, error) {
 	markAudited(ctx)
 	e := s.entry(req, "pty_resize", "", map[string]any{"cols": in.Cols, "rows": in.Rows})
-	p, _, err := s.ptyFor(&e, in.PTYID)
+	p, _, _, err := s.ptyFor(&e, in.PTYID)
 	if err != nil {
 		return nil, PTYResizeOutput{}, err
 	}
@@ -895,7 +904,7 @@ type PTYCloseOutput struct {
 func (s *Server) handlePTYClose(ctx context.Context, req *mcp.CallToolRequest, in PTYCloseInput) (*mcp.CallToolResult, PTYCloseOutput, error) {
 	markAudited(ctx)
 	e := s.entry(req, "pty_close", "", nil)
-	p, _, err := s.ptyFor(&e, in.PTYID)
+	p, _, _, err := s.ptyFor(&e, in.PTYID)
 	if err != nil {
 		return nil, PTYCloseOutput{}, err
 	}

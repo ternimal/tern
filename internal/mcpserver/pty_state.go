@@ -126,12 +126,19 @@ func (s *Server) loadPTYStore() {
 	s.ptyStoreMu.Lock()
 	s.ptyStore = st
 	s.ptyStoreMu.Unlock()
+	s.adoptRecords(recs)
+	s.savePTYs()
+}
+
+// adoptRecords reattaches the saved terminals that belong to a target of
+// this config: same name, same agent.
+func (s *Server) adoptRecords(recs []ptyRecord) {
 	for _, r := range recs {
 		if !isPTYSession(r.Session) || !isPTYID(r.PTYID) {
 			slog.Warn("dropping a saved terminal whose session or pty_id tern mcp did not name", "pty", r.PTYID, "session", r.Session)
 			continue
 		}
-		t := s.targets[r.Target]
+		t := s.tgts().byName[r.Target]
 		if t == nil || t.Endpoint != r.Endpoint || !t.Policy.PTYAllowed() || s.lookupPTY(r.PTYID) != nil {
 			slog.Info("dropping a saved terminal this config cannot reach", "pty", r.PTYID, "target", r.Target)
 			continue
@@ -139,15 +146,23 @@ func (s *Server) loadPTYStore() {
 		slog.Info("reattaching a saved terminal", "pty", r.PTYID, "target", r.Target, "session", r.Session)
 		s.adoptPTY(t, r)
 	}
-	s.savePTYs()
 }
 
 // savePTYs writes the open terminals to the state file.
 func (s *Server) savePTYs() {
 	s.ptyStoreMu.Lock()
 	defer s.ptyStoreMu.Unlock()
+	s.savePTYsLocked(nil)
+}
+
+// savePTYsLocked writes the open terminals, and the records in extra that
+// name none of them, to the state file, and reports whether it did; the
+// caller holds ptyStoreMu. A terminal is saved with the endpoint of the agent
+// it runs on, so a tern mcp whose config has since pointed the name at
+// another agent drops it instead of reattaching there.
+func (s *Server) savePTYsLocked(extra []ptyRecord) bool {
 	if s.ptyStore == nil || s.ptyStore.frozen {
-		return
+		return false
 	}
 	var recs []ptyRecord
 	s.ptysMu.Lock()
@@ -158,15 +173,62 @@ func (s *Server) savePTYs() {
 		if live {
 			next, _ := p.out.End()
 			recs = append(recs, ptyRecord{
-				PTYID: p.id, Target: p.target, Endpoint: s.targets[p.target].Endpoint, Session: p.session,
+				PTYID: p.id, Target: p.target, Endpoint: p.tgt.Endpoint, Session: p.session,
 				AttachID: p.attachID, Cols: cols, Rows: rows, Prompt: prompt, OpenedAt: p.opened, Next: next,
 			})
 		}
 	}
 	s.ptysMu.Unlock()
+	for _, r := range extra {
+		if !slices.ContainsFunc(recs, func(q ptyRecord) bool { return q.PTYID == r.PTYID }) {
+			recs = append(recs, r)
+		}
+	}
 	slices.SortFunc(recs, func(a, b ptyRecord) int { return a.OpenedAt.Compare(b.OpenedAt) })
 	if err := s.ptyStore.save(recs); err != nil {
 		slog.Warn("could not save the terminal state", "file", s.ptyStore.path, "err", err)
+		return false
+	}
+	return true
+}
+
+// MovePTYState moves the terminals this server keeps to the state file at
+// path, after a reload changed the targets the state file is named for, so a
+// tern mcp started later with the reloaded config reattaches them. As at
+// startup, the terminals an earlier tern mcp left in that file for these
+// targets are reattached. When another tern mcp holds that file, or it cannot
+// be written, the terminals stay where they are.
+func (s *Server) MovePTYState(path string) {
+	s.ptyStoreMu.Lock()
+	st := s.ptyStore
+	if st == nil || st.frozen || path == "" || path == st.path {
+		s.ptyStoreMu.Unlock()
+		return
+	}
+	next, recs, err := openPTYStore(path)
+	if err != nil {
+		s.ptyStoreMu.Unlock()
+		slog.Warn("terminals stay in the state file of the targets tern mcp started with", "file", st.path, "err", err)
+		return
+	}
+	old, oldLock := st.path, st.lock
+	st.path, st.lock = next.path, next.lock
+	// The new file gets this server's terminals and keeps the ones saved in
+	// it, before the old file goes: a crash in between loses neither.
+	if !s.savePTYsLocked(recs) {
+		st.path, st.lock = old, oldLock
+		s.ptyStoreMu.Unlock()
+		next.lock.Close()
+		return
+	}
+	// The old file goes while its lock is still held, so no tern mcp started
+	// with the old config reattaches what this one keeps.
+	os.Remove(old)
+	oldLock.Close()
+	s.ptyStoreMu.Unlock()
+	if len(recs) > 0 {
+		s.adoptRecords(recs)
+		s.savePTYs()
 	}
 }
 

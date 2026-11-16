@@ -75,9 +75,15 @@ type Config struct {
 	Version       string
 	Targets       []TargetSpec
 	DefaultTarget string // used when a call names no target; "" means the only one
-	AuditPath     string
-	MaxOutput     int           // default cap on output or content returned by one call
-	MaxTimeout    time.Duration // default cap on a run's timeout
+	// RegisterPolicies are policies whose capabilities also decide which tools
+	// the server registers, beyond those its current targets use. A --config
+	// run lists every profile here, so that adding a target that uses a
+	// so-far-unused profile at reload still finds its tools registered. nil
+	// falls back to the configured targets' own policies.
+	RegisterPolicies []*Policy
+	AuditPath        string
+	MaxOutput        int           // default cap on output or content returned by one call
+	MaxTimeout       time.Duration // default cap on a run's timeout
 	// SecretPaths changes the paths no profile may read or write, and the
 	// ones a download may not create in the workspace, server-wide. A
 	// profile's own secret_paths adds to it.
@@ -106,11 +112,58 @@ type targetState struct {
 	osDetail string
 }
 
+// sameConn reports whether o reaches the same agent over the same transport
+// as t, so a reload that changed only the policy can keep t's probed OS.
+func (t *targetState) sameConn(o Target) bool {
+	return t.Mode == o.Mode && t.Endpoint == o.Endpoint &&
+		t.Fingerprint == o.Fingerprint && t.Transport == o.Transport
+}
+
+// targetSet is an immutable snapshot of the configured targets. The server
+// holds it behind an atomic pointer and swaps a whole new one in when the
+// config reloads, so a call that has taken the current set keeps one
+// consistent view of the names, lookups and default for its whole duration.
+type targetSet struct {
+	byName  map[string]*targetState
+	names   []string // configuration order
+	defName string   // default target, "" when there is none
+}
+
+// buildTargetSet validates specs and builds a target set. When old is not nil,
+// a target whose connection is unchanged keeps the OS old had already probed,
+// so a reload does not make every target re-probe.
+func buildTargetSet(old *targetSet, specs []TargetSpec, defaultTarget string) (*targetSet, error) {
+	ts := &targetSet{byName: make(map[string]*targetState, len(specs)), defName: defaultTarget}
+	for _, t := range specs {
+		switch {
+		case t.Name == "":
+			return nil, fmt.Errorf("a target has no name")
+		case ts.byName[t.Name] != nil:
+			return nil, fmt.Errorf("target %q is configured twice", t.Name)
+		case t.Policy == nil || t.Dial == nil:
+			return nil, fmt.Errorf("target %q has no policy or dialer", t.Name)
+		}
+		st := &targetState{TargetSpec: t}
+		if old != nil {
+			if prev := old.byName[t.Name]; prev != nil && prev.sameConn(t.Target) {
+				prev.mu.Lock()
+				st.osName, st.osDetail = prev.osName, prev.osDetail
+				prev.mu.Unlock()
+			}
+		}
+		ts.byName[t.Name] = st
+		ts.names = append(ts.names, t.Name)
+	}
+	if defaultTarget != "" && ts.byName[defaultTarget] == nil {
+		return nil, fmt.Errorf("default target %q is not configured", defaultTarget)
+	}
+	return ts, nil
+}
+
 // Server is a configured tern MCP server.
 type Server struct {
 	cfg     Config
-	targets map[string]*targetState
-	names   []string // configuration order
+	tset    atomic.Pointer[targetSet] // the live target set, swapped on reload
 	audit   *Auditor
 	root    *os.Root // the workspace, nil when not configured
 	wsAbs   string   // the workspace's absolute path, as configured
@@ -151,25 +204,15 @@ func New(cfg Config) (*Server, error) {
 	if len(cfg.Targets) == 0 {
 		return nil, fmt.Errorf("no targets configured")
 	}
-	s := &Server{cfg: cfg, targets: map[string]*targetState{}, confirm: newConfirmer(cfg.ConfirmWait), idem: newIdemCache(), jobs: map[string]*job{}, ptys: map[string]*ptyState{},
+	s := &Server{cfg: cfg, confirm: newConfirmer(cfg.ConfirmWait), idem: newIdemCache(), jobs: map[string]*job{}, ptys: map[string]*ptyState{},
 		castSlot: make(chan struct{}, 1)}
 	s.base, s.stopJobs = context.WithCancel(context.Background())
 	s.jobSlots = make(chan struct{}, maxRunningJobs)
-	for _, t := range cfg.Targets {
-		switch {
-		case t.Name == "":
-			return nil, fmt.Errorf("a target has no name")
-		case s.targets[t.Name] != nil:
-			return nil, fmt.Errorf("target %q is configured twice", t.Name)
-		case t.Policy == nil || t.Dial == nil:
-			return nil, fmt.Errorf("target %q has no policy or dialer", t.Name)
-		}
-		s.targets[t.Name] = &targetState{TargetSpec: t}
-		s.names = append(s.names, t.Name)
+	ts, err := buildTargetSet(nil, cfg.Targets, cfg.DefaultTarget)
+	if err != nil {
+		return nil, err
 	}
-	if cfg.DefaultTarget != "" && s.targets[cfg.DefaultTarget] == nil {
-		return nil, fmt.Errorf("default target %q is not configured", cfg.DefaultTarget)
-	}
+	s.tset.Store(ts)
 	if s.cfg.MaxOutput <= 0 {
 		s.cfg.MaxOutput = 256 << 10
 	}
@@ -240,7 +283,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	s.addFileTools()
 	s.addJobTools()
-	if s.anyTarget(func(p *Policy) bool { return p.PTYAllowed() }) {
+	if s.mayRegister(func(p *Policy) bool { return p.PTYAllowed() }) {
 		s.addPTYTools()
 		if cfg.RecordDir != "" {
 			s.addRecordingResource()
@@ -443,27 +486,78 @@ func (s *Server) closeRoot() {
 	}
 }
 
-// anyTarget reports whether some target's policy satisfies f; tool
-// registration and annotations depend on what any target could allow, since
-// the tool list is the same for every caller.
+// tgts returns the live target set.
+func (s *Server) tgts() *targetSet { return s.tset.Load() }
+
+// SetTargets swaps in a target set built from a reloaded config, so a host
+// added to or changed in the config file is usable without restarting the
+// server. A target whose connection is unchanged keeps its probed OS; a new or
+// changed target starts fresh; a removed target's open terminals and jobs keep
+// running against their agent but can no longer be named by a new call. The
+// set of registered tools never changes, so a target that needs a tool the
+// running server did not register (the first write- or terminal-capable target
+// of a session that began read-only) needs a restart, not a reload; listing
+// every profile in Config.RegisterPolicies avoids that for profiles the config
+// already defines.
+func (s *Server) SetTargets(specs []TargetSpec, defaultTarget string) error {
+	ts, err := buildTargetSet(s.tgts(), specs, defaultTarget)
+	if err != nil {
+		return err
+	}
+	s.tset.Store(ts)
+	return nil
+}
+
+// liveTarget returns the target that now governs a job or terminal opened on
+// opened: the configured target of the same name while it still reaches the
+// same agent, so a profile changed at reload holds for it at once. When a
+// reload has removed the name or pointed it at another agent, it returns
+// opened, and why says that nothing more may be sent to the agent through the
+// job or terminal; reading, resizing, closing and cancelling go on, with
+// opened's limits. Adding the target back as it was makes it usable again.
+func (s *Server) liveTarget(opened *targetState) (*targetState, string) {
+	cur := s.tgts().byName[opened.Name]
+	switch {
+	case cur == nil:
+		return opened, fmt.Sprintf("target %q is no longer in the config, so nothing more is sent to it; this can still be read and closed, and adding the target back as it was makes it usable again", opened.Name)
+	case !cur.sameConn(opened.Target):
+		return opened, fmt.Sprintf("target %q now names another agent in the config, %s, while this was opened on %s, so nothing more is sent to it; it can still be read and closed", opened.Name, escapeHidden(cur.Endpoint), escapeHidden(opened.Endpoint))
+	}
+	return cur, ""
+}
+
+// anyTarget reports whether some configured target's policy satisfies f.
 func (s *Server) anyTarget(f func(*Policy) bool) bool {
 	return slices.ContainsFunc(s.cfg.Targets, func(t TargetSpec) bool { return f(t.Policy) })
 }
 
+// mayRegister reports whether some target, or some profile the config may
+// attach to a target added at reload, satisfies f. Tool registration and
+// annotations use it so the tool list, which is the same for every caller and
+// fixed once the server starts, covers what a reload could enable; the
+// per-call policy still gates every actual use.
+func (s *Server) mayRegister(f func(*Policy) bool) bool {
+	if slices.ContainsFunc(s.cfg.RegisterPolicies, func(p *Policy) bool { return p != nil && f(p) }) {
+		return true
+	}
+	return s.anyTarget(f)
+}
+
 // resolve picks the target a call names, or the default.
 func (s *Server) resolve(name string) (*targetState, error) {
+	ts := s.tgts()
 	if name == "" {
-		name = s.cfg.DefaultTarget
-		if name == "" && len(s.names) == 1 {
-			name = s.names[0]
+		name = ts.defName
+		if name == "" && len(ts.names) == 1 {
+			name = ts.names[0]
 		}
 		if name == "" {
-			return nil, fmt.Errorf("name a target; configured: %s", strings.Join(s.names, ", "))
+			return nil, fmt.Errorf("name a target; configured: %s", strings.Join(ts.names, ", "))
 		}
 	}
-	t := s.targets[name]
+	t := ts.byName[name]
 	if t == nil {
-		return nil, fmt.Errorf("unknown target %q; configured: %s", name, strings.Join(s.names, ", "))
+		return nil, fmt.Errorf("unknown target %q; configured: %s", name, strings.Join(ts.names, ", "))
 	}
 	return t, nil
 }
@@ -503,6 +597,9 @@ func (s *Server) targetOS(ctx context.Context, t *targetState) (string, string, 
 // limits returns the output and timeout caps for a target's profile.
 func (s *Server) limits(t *targetState) (int, time.Duration) {
 	out, timeout := s.cfg.MaxOutput, s.cfg.MaxTimeout
+	if t == nil {
+		return out, timeout
+	}
 	if t.Policy.outputCap > 0 {
 		out = t.Policy.outputCap
 	}

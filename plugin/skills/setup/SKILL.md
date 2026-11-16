@@ -96,6 +96,12 @@ tern run --addr 203.0.113.10:2222 --fingerprint <fp> --key ~/.ssh/id_tern -- una
 Then run `/reload-plugins` (or start a new session). `/mcp` lists the server
 as `plugin:ternimal:tern`.
 
+Once the server is running, a host you *add* to the config file later needs no
+`/reload-plugins`: `tern mcp` re-reads the file while it runs, so saving it (or
+`kill -HUP $(pgrep -f 'tern mcp')`) makes the new target show up the next time
+the AI calls `list_targets`, in the same session. `/reload-plugins` is only for
+the first time, to register the server with Claude Code.
+
 If the server does not start, run `tern mcp --config ~/.config/tern/mcp.json`
 in a shell: it prints the reason and exits, for example a fingerprint that is
 not 64 hex digits, a missing key, a token file others could read or change,

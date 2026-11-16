@@ -52,7 +52,7 @@ func (s *Server) addFileTools() {
 		Description: "List the names of the live interactive shell sessions on a remote host.",
 		Annotations: readOnly,
 	}, s.handleSessions)
-	if s.anyTarget((*Policy).CanWrite) {
+	if s.mayRegister((*Policy).CanWrite) {
 		addTool(s, &mcp.Tool{
 			Name:        "write_file",
 			Title:       "Write a file",
@@ -65,7 +65,7 @@ func (s *Server) addFileTools() {
 	if s.root == nil {
 		return
 	}
-	if s.anyTarget((*Policy).CanWrite) {
+	if s.mayRegister((*Policy).CanWrite) {
 		addTool(s, &mcp.Tool{
 			Name:        "upload",
 			Title:       "Upload a file",

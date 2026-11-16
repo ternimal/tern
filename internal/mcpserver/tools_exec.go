@@ -37,7 +37,7 @@ func (s *Server) addExecTools() error {
 		return err
 	}
 	runAnn := readOnly
-	if s.anyTarget(func(p *Policy) bool { return !p.RunReadOnly() }) {
+	if s.mayRegister(func(p *Policy) bool { return !p.RunReadOnly() }) {
 		destructive := true // some profile allows commands that may change the host
 		runAnn = &mcp.ToolAnnotations{DestructiveHint: &destructive}
 	}
@@ -265,13 +265,14 @@ type TargetsOutput struct {
 
 func (s *Server) handleTargets(ctx context.Context, req *mcp.CallToolRequest, _ TargetsInput) (*mcp.CallToolResult, TargetsOutput, error) {
 	markAudited(ctx)
-	def := s.cfg.DefaultTarget
-	if def == "" && len(s.names) == 1 {
-		def = s.names[0]
+	ts := s.tgts()
+	def := ts.defName
+	if def == "" && len(ts.names) == 1 {
+		def = ts.names[0]
 	}
-	out := TargetsOutput{Targets: make([]TargetEntry, 0, len(s.names))}
-	for _, n := range s.names {
-		t := s.targets[n]
+	out := TargetsOutput{Targets: make([]TargetEntry, 0, len(ts.names))}
+	for _, n := range ts.names {
+		t := ts.byName[n]
 		out.Targets = append(out.Targets, TargetEntry{
 			Name: t.Name, Mode: t.Mode, Endpoint: escapeHidden(t.Endpoint), Transport: t.Transport, Profile: t.Policy.Profile,
 			Default: n == def, Shell: t.Policy.ShellAllowed(), CanWrite: t.Policy.CanWrite(), PTY: t.Policy.PTYAllowed(),
