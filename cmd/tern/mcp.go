@@ -278,6 +278,9 @@ var (
 // reloaded target newly points at is protected from the workspace tools only
 // after a restart. sum is the hash of the config tern mcp started with.
 func watchMCPConfig(ctx context.Context, srv *mcpserver.Server, path string, sum [sha256.Size]byte, persist bool) {
+	// Read once, here: the watcher never reads the variables, which a test
+	// sets back once it is done.
+	poll, verify, settle := configPoll, configVerify, configSettle
 	lastErr := ""
 	skip := func(trigger string, err error) {
 		if msg := err.Error(); msg != lastErr {
@@ -305,7 +308,7 @@ func watchMCPConfig(ctx context.Context, srv *mcpserver.Server, path string, sum
 			return
 		}
 		if !force {
-			time.Sleep(configSettle)
+			time.Sleep(settle)
 			if data = read(trigger); data == nil {
 				return
 			}
@@ -335,7 +338,7 @@ func watchMCPConfig(ctx context.Context, srv *mcpserver.Server, path string, sum
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
 		defer signal.Stop(hup)
-		tick := time.NewTicker(configPoll)
+		tick := time.NewTicker(poll)
 		defer tick.Stop()
 		seen, _ := os.Stat(path) // the file as it looked when last read
 		verified := time.Now()
@@ -348,7 +351,7 @@ func watchMCPConfig(ctx context.Context, srv *mcpserver.Server, path string, sum
 			case <-tick.C:
 				fi, err := os.Stat(path)
 				if err == nil && seen != nil && fi.Size() == seen.Size() && fi.ModTime().Equal(seen.ModTime()) &&
-					time.Since(verified) < configVerify {
+					time.Since(verified) < verify {
 					continue
 				}
 				reload("file change", false)
