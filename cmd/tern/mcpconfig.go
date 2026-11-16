@@ -87,6 +87,12 @@ func loadMCPConfig(path string) (*mcpConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseMCPConfig(path, data)
+}
+
+// parseMCPConfig parses data, the config file read from path, as
+// loadMCPConfig does; a reload hashes and parses the same bytes.
+func parseMCPConfig(path string, data []byte) (*mcpConfig, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var c mcpConfig

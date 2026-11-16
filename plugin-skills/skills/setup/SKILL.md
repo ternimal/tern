@@ -107,6 +107,12 @@ https://github.com/ternimal/tern/blob/main/docs/mcp.md. Restart the session;
 so they work in Claude Code, Claude Desktop and Cowork on that computer, not
 in claude.ai chat.
 
+Once the server is running, a host you *add* to the config file later needs no
+restart: `tern mcp` re-reads the file while it runs, so saving it (or
+`kill -HUP $(pgrep -f 'tern mcp')`) makes the new target show up the next time
+the AI calls `list_targets`, in the same session. The restart is only for the
+first time, to add the server.
+
 If the server does not start, run `tern mcp --config ~/.config/tern/mcp.json`
 in a shell: it prints the reason and exits, for example a fingerprint that is
 not 64 hex digits, a missing key, a token file others could read or change,

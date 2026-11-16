@@ -40,7 +40,8 @@ const (
 type job struct {
 	id      string
 	target  string
-	argv    []string // redacted, for job_list
+	tgt     *targetState // the target the job was started on (see liveTarget)
+	argv    []string     // redacted, for job_list
 	started time.Time
 	out     *ringBuffer
 	cancel  context.CancelFunc
@@ -67,7 +68,7 @@ func newHandle(prefix string) string {
 // from running in the background: like terminals and writes, jobs come with a
 // profile that asks for more.
 func (s *Server) addJobTools() {
-	if !s.anyTarget(func(p *Policy) bool { return !p.RunReadOnly() }) {
+	if !s.mayRegister(func(p *Policy) bool { return !p.RunReadOnly() }) {
 		return
 	}
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
@@ -195,7 +196,7 @@ func (s *Server) startJob(ctx context.Context, t *targetState, e AuditEntry, arg
 	default:
 		return nil, beforeStart(s.deny(e, fmt.Sprintf("%d jobs are already running; wait for one to finish or cancel it", maxRunningJobs)))
 	}
-	j := &job{id: newHandle("job_"), target: t.Name, out: newRingBuffer(jobBuffer)}
+	j := &job{id: newHandle("job_"), target: t.Name, tgt: t, out: newRingBuffer(jobBuffer)}
 	e.JobID = j.id
 	if err := s.logStart(e); err != nil {
 		<-s.jobSlots
@@ -336,7 +337,9 @@ func (s *Server) handleJobPoll(ctx context.Context, req *mcp.CallToolRequest, in
 	if in.Since < 0 || in.WaitMS < 0 || in.MaxBytes < 0 {
 		return nil, JobPollOutput{}, s.deny(e, "since, wait_ms and max_bytes must not be negative")
 	}
-	limit, _ := s.limits(s.targets[j.target])
+	// A job's output stays readable whatever a reload did to its target.
+	t, _ := s.liveTarget(j.tgt)
+	limit, _ := s.limits(t)
 	if in.MaxBytes > 0 && in.MaxBytes < limit {
 		limit = in.MaxBytes
 	}

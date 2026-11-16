@@ -61,15 +61,19 @@ const (
 
 type ptyState struct {
 	id, target, session, attachID string
-	out                           *ringBuffer
-	rec                           *tern.Recorder
-	opened                        time.Time
-	idle                          time.Duration // closed after this long unused
-	runMu                         sync.Mutex    // one pty_run at a time
-	ctx                           context.Context
-	cancel                        context.CancelFunc
-	done                          chan struct{} // closed when the terminal's goroutine has finished
-	onEnd                         func()        // called once the terminal has ended
+	// tgt is the target the terminal was opened or reattached with: its
+	// agent is the one the terminal runs on, whatever a reload later does
+	// to the name (see liveTarget).
+	tgt    *targetState
+	out    *ringBuffer
+	rec    *tern.Recorder
+	opened time.Time
+	idle   time.Duration // closed after this long unused
+	runMu  sync.Mutex    // one pty_run at a time
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{} // closed when the terminal's goroutine has finished
+	onEnd  func()        // called once the terminal has ended
 
 	// agentPos is the position in the agent's output of the next byte this
 	// terminal expects, and adopting marks a terminal reattached after tern
@@ -118,9 +122,10 @@ func isBase32Lower(s string) bool {
 	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyz234567") == ""
 }
 
-func (s *Server) newPTY(id, target, session, attachID string, cols, rows int, opened time.Time, idle time.Duration) *ptyState {
+func (s *Server) newPTY(id string, t *targetState, session, attachID string, cols, rows int, opened time.Time, idle time.Duration) *ptyState {
+	target := t.Name
 	p := &ptyState{
-		id: id, target: target, session: session, attachID: attachID,
+		id: id, target: target, tgt: t, session: session, attachID: attachID,
 		out: newRingBuffer(ptyBuffer), opened: opened, idle: idle,
 		done: make(chan struct{}), ready: make(chan struct{}),
 		cols: cols, rows: rows, lastUsed: time.Now(), onEnd: s.ptyEnded,
@@ -134,7 +139,7 @@ func (s *Server) newPTY(id, target, session, attachID string, cols, rows int, op
 // its output, and waits briefly for the shell's first prompt.
 func (s *Server) openPTY(ctx context.Context, t *targetState, cols, rows int) (*ptyState, error) {
 	perTarget, idle := t.Policy.PTYLimits()
-	p := s.newPTY(newHandle("pty_"), t.Name, newPTYSession(), newHandle(""), cols, rows, time.Now(), idle)
+	p := s.newPTY(newHandle("pty_"), t, newPTYSession(), newHandle(""), cols, rows, time.Now(), idle)
 	s.ptysMu.Lock()
 	total, here := 0, 0
 	for _, q := range s.ptys {
@@ -183,7 +188,7 @@ func (s *Server) openPTY(ctx context.Context, t *targetState, cols, rows int) (*
 // connected.
 func (s *Server) adoptPTY(t *targetState, r ptyRecord) {
 	_, idle := t.Policy.PTYLimits()
-	p := s.newPTY(r.PTYID, t.Name, r.Session, r.AttachID, r.Cols, r.Rows, r.OpenedAt, idle)
+	p := s.newPTY(r.PTYID, t, r.Session, r.AttachID, r.Cols, r.Rows, r.OpenedAt, idle)
 	p.adopting, p.prompt = true, r.Prompt
 	p.out.start = max(r.Next, 0) // continue the offsets the last tern mcp handed out
 	s.ptysMu.Lock()
@@ -499,8 +504,10 @@ func (s *Server) closePTYIf(p *ptyState, endSession bool, cond func() bool) bool
 	if !already && endSession && !exited {
 		// Not connected, or the connection dropped before the agent said
 		// the shell ended: the request may never have arrived, so dial the
-		// agent and end the session there.
-		if t := s.targets[p.target]; t != nil {
+		// agent and end the session there. That is the agent the terminal
+		// was opened on, never what a reload has since put under its name,
+		// which must not be handed this session's name and attach ID.
+		if t := p.tgt; t != nil {
 			s.endSession(p, t)
 		}
 	}
@@ -612,7 +619,7 @@ func (s *Server) ptyEnded() {
 	for target, list := range ended {
 		slices.SortFunc(list, func(a, b *ptyState) int { return a.endTime().Compare(b.endTime()) })
 		keep := defaultPTYsPerTarget
-		if t := s.targets[target]; t != nil {
+		if t := s.tgts().byName[target]; t != nil {
 			keep, _ = t.Policy.PTYLimits()
 		}
 		for len(list) > keep {
